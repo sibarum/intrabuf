@@ -73,7 +73,8 @@ class DynamicAgreementTest {
         // A manifest that only knows test.Point v1.0, as an old release's would.
         Manifest tests = Manifests.load(Manifests.TESTS);
         Manifest old = new Manifest(tests.format(), tests.wireVersion(), "old", "0.9.0", false,
-                tests.messages().stream().filter(m -> !m.info().javaType().endsWith("PointV1")).toList(), tests.enums());
+                tests.messages().stream().filter(m -> !m.info().javaType().endsWith("PointV1")).toList(), tests.enums(),
+                tests.headers());
         DynamicDecoder.Decoded d = new DynamicDecoder(new SchemaSet().add(old))
                 .decode(CompatSchemas_PointV1Intrabuf.toBytes(new PointV1(4, 5, 6, true)));
         assertMatchesDynamic(new PointV0(4, 5), d.value());

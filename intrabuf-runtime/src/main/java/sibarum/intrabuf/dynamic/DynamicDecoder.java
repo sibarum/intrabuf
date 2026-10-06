@@ -1,6 +1,8 @@
 package sibarum.intrabuf.dynamic;
 
+import sibarum.intrabuf.Compat;
 import sibarum.intrabuf.Header;
+import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.IbReader;
 import sibarum.intrabuf.IntrabufException;
 import sibarum.intrabuf.dynamic.DynValue.DynEnum;
@@ -10,6 +12,7 @@ import sibarum.intrabuf.dynamic.DynValue.DynMap;
 import sibarum.intrabuf.dynamic.DynValue.DynMessage;
 import sibarum.intrabuf.schema.EnumDef;
 import sibarum.intrabuf.schema.FieldDef;
+import sibarum.intrabuf.schema.HeaderDef;
 import sibarum.intrabuf.schema.Layout;
 import sibarum.intrabuf.schema.MessageDef;
 import sibarum.intrabuf.schema.TypeRef;
@@ -38,12 +41,29 @@ public final class DynamicDecoder {
      * @param trailingBytes bytes after the root message: unknown newer fields if the payload is from a newer FULL
      *                      minor, corruption otherwise
      */
-    public record Decoded(Header header, MessageDef schema, DynMessage value, List<String> warnings, int trailingBytes) {
+    public record Decoded(Header header, DynMessage frame, MessageDef schema, DynMessage value, List<String> warnings,
+                          int trailingBytes) {
     }
 
+    /** Decodes a payload with intrabuf's built-in header. */
     public Decoded decode(byte[] payload) {
+        return decode(payload, null);
+    }
+
+    /**
+     * Decodes a payload whose header is the application format {@code format}, or the built-in one if null. The
+     * header record is returned as {@link Decoded#frame()}, application fields and all.
+     */
+    public Decoded decode(byte[] payload, HeaderDef format) {
         IbReader r = new IbReader(payload);
-        Header h = Header.read(r);
+        Header h;
+        DynMessage frame = null;
+        if (format == null) {
+            h = Header.read(r);
+        } else {
+            frame = readBody(r, format.def(), format.def().minor(), new ArrayList<>());
+            h = facts(frame, format, r.position());
+        }
         SchemaSet.Selection sel = schemas.select(h);
         List<String> warnings = new ArrayList<>(sel.warnings());
         DynMessage value = readBody(r, sel.def(), h.minor(), warnings);
@@ -55,7 +75,53 @@ public final class DynamicDecoder {
                 warnings.add(trailing + " trailing byte(s) after the message; the payload may be corrupt");
             }
         }
-        return new Decoded(h, sel.def(), value, warnings, trailing);
+        return new Decoded(h, frame, sel.def(), value, warnings, trailing);
+    }
+
+    /** An application header as read: its record, and the facts its role fields carry. */
+    public record Frame(DynMessage record, Header facts) {
+    }
+
+    /** Reads only the application header at the start of {@code payload}; no message schema is needed. */
+    public Frame readFrame(byte[] payload, HeaderDef format) {
+        IbReader r = new IbReader(payload);
+        DynMessage frame = readBody(r, format.def(), format.def().minor(), new ArrayList<>());
+        return new Frame(frame, facts(frame, format, r.position()));
+    }
+
+    /** The header facts an application header carries, read from its role fields. */
+    static Header facts(DynMessage frame, HeaderDef format, int size) {
+        int wire = 0, id = 0, major = 0, minor = 0, fp = 0;
+        Compat compat = null;
+        boolean snapshot = false, hasFp = false;
+        for (Map.Entry<String, HeaderRole> e : format.roles().entrySet()) {
+            Object v = frame.get(e.getKey());
+            switch (e.getValue()) {
+                case WIRE_VERSION -> wire = number(v, e);
+                case SCHEMA_ID -> id = number(v, e);
+                case MAJOR -> major = number(v, e);
+                case MINOR -> minor = number(v, e);
+                case SNAPSHOT -> snapshot = Boolean.TRUE.equals(v);
+                case FINGERPRINT -> {
+                    hasFp = v != null;
+                    fp = hasFp ? number(v, e) : 0;
+                }
+                case COMPAT -> {
+                    if (!(v instanceof DynEnum de) || de.name() == null) {
+                        throw new IntrabufException("header " + format.name() + "." + e.getKey() + " is not a known compat mode: " + v);
+                    }
+                    compat = Compat.valueOf(de.name());
+                }
+            }
+        }
+        return new Header(wire, snapshot, compat, id, major, minor, hasFp, fp, size);
+    }
+
+    private static int number(Object v, Map.Entry<String, HeaderRole> e) {
+        if (!(v instanceof Number n)) {
+            throw new IntrabufException("header field " + e.getKey() + " (" + e.getValue() + ") is not a number: " + v);
+        }
+        return n.intValue();
     }
 
     private Layout layout(MessageDef d) {
@@ -73,7 +139,7 @@ public final class DynamicDecoder {
         List<DynField> fields = new ArrayList<>(d.fields().size());
         for (int i = 0; i < d.fields().size(); i++) {
             FieldDef f = d.fields().get(i);
-            if (d.compat() != sibarum.intrabuf.Compat.STRICT && f.since() > minor) {
+            if (d.compat() != Compat.STRICT && f.since() > minor) {
                 continue; // not in the payload: the writer predates it
             }
             boolean optional = f.type() instanceof TypeRef.OptionalOf;
@@ -90,7 +156,7 @@ public final class DynamicDecoder {
             }
             fields.add(new DynField(f.name(), optional ? Optional.ofNullable(value) : value));
         }
-        return new DynMessage(d.name(), d.compat() == sibarum.intrabuf.Compat.STRICT ? -1 : minor, fields, 0);
+        return new DynMessage(d.name(), d.compat() == Compat.STRICT ? -1 : minor, fields, 0);
     }
 
     private static boolean bit(IbReader r, int at, int nb, int bit) {

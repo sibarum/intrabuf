@@ -139,6 +139,49 @@ class DiagnosticsTest {
         fails("@IntrabufMessage(name = \"a<b\") record T(int a) {}", "must be non-empty");
     }
 
+    private static final String ROLES = """
+            @Role(HeaderRole.WIRE_VERSION) byte w, @Role(HeaderRole.SCHEMA_ID) int id,
+            @Role(HeaderRole.MAJOR) int major, @Role(HeaderRole.MINOR) int minor,
+            @Role(HeaderRole.COMPAT) Compat compat, @Role(HeaderRole.SNAPSHOT) boolean snap
+            """;
+
+    @Test
+    void validHeaderCompiles() {
+        Result r = compile(HEADER + "import sibarum.intrabuf.HeaderRole;\n@IntrabufHeader record H(long corr, " + ROLES
+                + ", @Role(HeaderRole.FINGERPRINT) @Field(fixed = true) Integer fp) {}");
+        assertTrue(r.success(), r.diagnostics());
+        assertTrue(Files.exists(r.out().resolve("t/HIntrabuf.class")), "header codec compiled");
+    }
+
+    @Test
+    void headerRoles() {
+        String h = "import sibarum.intrabuf.HeaderRole;\n"; // fails() prepends HEADER
+        fails(h + "@IntrabufHeader record H(" + ROLES + ") {}", "no component with @Role(FINGERPRINT)");
+        fails(h + "@IntrabufHeader record H(" + ROLES + ", @Role(HeaderRole.FINGERPRINT) Integer fp, @Role(HeaderRole.MAJOR) int m2) {}",
+                "role MAJOR is already carried");
+        fails(h + "@IntrabufHeader record H(" + ROLES.replace("int id", "long id") + ", @Role(HeaderRole.FINGERPRINT) Integer fp) {}",
+                "@Role(SCHEMA_ID) must be int, not long");
+        fails(h + "@IntrabufMessage record M(@Role(HeaderRole.MAJOR) int m) {}", "@Role is only meaningful in an @IntrabufHeader");
+        fails(h + "@IntrabufMessage @IntrabufHeader record M(int m) {}", "not both");
+    }
+
+    @Test
+    void fingerprintAsVarintWarns() {
+        Result r = compile(HEADER + "import sibarum.intrabuf.HeaderRole;\n@IntrabufHeader record H(" + ROLES
+                + ", @Role(HeaderRole.FINGERPRINT) Integer fp) {}");
+        assertTrue(r.success(), r.diagnostics());
+        assertTrue(r.diagnostics().contains("averages 5 bytes"), r.diagnostics());
+    }
+
+    @Test
+    void explicitIds() {
+        fails("@IntrabufMessage(name = \"t.A\", id = 5) record A(int x) {}\n"
+                + "@IntrabufMessage(name = \"t.B\", id = 5) record B(int x) {}", "have the same id 0x00000005");
+        fails("@IntrabufMessage(name = \"t.A\", id = 5) record A(int x) {}\n"
+                + "@IntrabufMessage(name = \"t.A\", id = 6, minor = 1) record A1(int x) {}", "every version of a schema must keep its id");
+        fails("@IntrabufMessage(id = {1, 2}) record A(int x) {}", "id takes one value");
+    }
+
     @Test
     void sinceOnStrictWarns() {
         Result r = compile(HEADER + "@IntrabufMessage(minor = 1) record T(@Field(since = 1) int a) {}");

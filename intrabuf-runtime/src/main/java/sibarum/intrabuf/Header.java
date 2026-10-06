@@ -1,20 +1,27 @@
 package sibarum.intrabuf;
 
 /**
- * The header every payload starts with. Release payloads in BACKWARD or FULL mode spend 8 bytes on it (4 more with a
- * fingerprint):
+ * What a payload says about the schema it was written with: the facts {@link Compatibility#check} decides on.
+ *
+ * <p>Where those facts live on the wire is up to a {@link HeaderCodec}. An application with its own frame header
+ * declares it as an {@code @IntrabufHeader} record and marks which components carry which {@link HeaderRole}; the
+ * processor generates the codec. Without one, payloads use {@link #CODEC}, intrabuf's own compact header, which
+ * spends 8 bytes on a release BACKWARD or FULL payload (4 more with a fingerprint):
  *
  * <pre>
  *   byte    0xB0 | wireVersion      magic nibble 0xB, then the wire format version (1)
  *   byte    flags                   bit 0 snapshot, bit 1 fingerprint present, bits 2-3 compat, bits 4-7 zero
- *   fixed32 schema id               hash of the schema name
+ *   fixed32 schema id
  *   varint  major
  *   varint  minor
  *   fixed32 fingerprint             only if flag bit 1
  * </pre>
  *
+ * The built-in header is written by hand rather than generated from a record: a record body starts with its
+ * bitset, and the magic byte has to come first for a reader to tell an intrabuf payload from anything else.
+ *
  * @param hasFingerprint whether the payload carried a fingerprint; {@code fingerprint} is 0 if not
- * @param size           how many bytes the header occupied
+ * @param size           how many bytes the header occupied, or -1 if unknown
  */
 public record Header(int wireVersion, boolean snapshot, Compat compat, int schemaId, int major, int minor,
                      boolean hasFingerprint, int fingerprint, int size) {
@@ -30,28 +37,57 @@ public record Header(int wireVersion, boolean snapshot, Compat compat, int schem
 
     private static final Compat[] COMPATS = Compat.values();
 
-    /** The header a codec for {@code s} writes: constant per codec, so codecs precompute it. */
+    /** The built-in header format. */
+    public static final HeaderCodec<Header> CODEC = new HeaderCodec<>() {
+        @Override
+        protected void writeBody(IbWriter w, Header h) {
+            Header.write(w, h);
+        }
+
+        @Override
+        protected Header readBody(IbReader r, int minor) {
+            return Header.read(r);
+        }
+
+        @Override
+        public Header facts(Header h, int size) {
+            return h.size() == size ? h : new Header(h.wireVersion, h.snapshot, h.compat, h.schemaId, h.major, h.minor,
+                    h.hasFingerprint, h.fingerprint, size);
+        }
+    };
+
+    /** The facts a writer with schema {@code s} puts in every payload, whatever header format carries them. */
+    public static Header of(SchemaInfo s) {
+        return new Header(WIRE_VERSION, s.snapshot(), s.compat(), s.id(), s.major(), s.minor(), s.writesFingerprint(),
+                s.writesFingerprint() ? s.fingerprint() : 0, -1);
+    }
+
+    /** The built-in header a codec for {@code s} writes: constant per codec, so codecs precompute it. */
     public static byte[] encode(SchemaInfo s) {
         IbWriter w = new IbWriter(16);
-        w.writeInt8((byte) ((MAGIC << 4) | WIRE_VERSION));
-        int flags = s.compat().ordinal() << COMPAT_SHIFT;
-        if (s.snapshot()) {
-            flags |= FLAG_SNAPSHOT;
-        }
-        if (s.writesFingerprint()) {
-            flags |= FLAG_FINGERPRINT;
-        }
-        w.writeInt8((byte) flags);
-        w.writeFixed32(s.id());
-        w.writeVarint(s.major());
-        w.writeVarint(s.minor());
-        if (s.writesFingerprint()) {
-            w.writeFixed32(s.fingerprint());
-        }
+        write(w, of(s));
         return w.toByteArray();
     }
 
-    /** Reads a header, leaving {@code r} at the start of the body. */
+    static void write(IbWriter w, Header h) {
+        w.writeInt8((byte) ((MAGIC << 4) | (h.wireVersion & 0x0F)));
+        int flags = h.compat.ordinal() << COMPAT_SHIFT;
+        if (h.snapshot) {
+            flags |= FLAG_SNAPSHOT;
+        }
+        if (h.hasFingerprint) {
+            flags |= FLAG_FINGERPRINT;
+        }
+        w.writeInt8((byte) flags);
+        w.writeFixed32(h.schemaId);
+        w.writeVarint(h.major);
+        w.writeVarint(h.minor);
+        if (h.hasFingerprint) {
+            w.writeFixed32(h.fingerprint);
+        }
+    }
+
+    /** Reads a built-in header, leaving {@code r} at the start of the body. */
     public static Header read(IbReader r) {
         int at = r.position();
         if (r.remaining() == 0) {
@@ -83,7 +119,7 @@ public record Header(int wireVersion, boolean snapshot, Compat compat, int schem
                 r.position() - at);
     }
 
-    /** Reads just the header of a payload, e.g. to route it to the right codec. */
+    /** Reads just the built-in header of a payload, e.g. to route it to the right codec. */
     public static Header peek(byte[] payload) {
         return read(new IbReader(payload));
     }

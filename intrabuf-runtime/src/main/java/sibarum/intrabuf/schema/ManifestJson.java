@@ -1,10 +1,12 @@
 package sibarum.intrabuf.schema;
 
 import sibarum.intrabuf.Compat;
+import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.Hex;
 import sibarum.intrabuf.SchemaInfo;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +30,7 @@ public final class ManifestJson {
         sb.append("  \"messages\": [");
         for (int i = 0; i < m.messages().size(); i++) {
             sb.append(i == 0 ? "\n" : ",\n");
-            writeMessage(sb, m.messages().get(i));
+            writeMessage(sb, m.messages().get(i), null);
         }
         sb.append(m.messages().isEmpty() ? "],\n" : "\n  ],\n");
         sb.append("  \"enums\": [");
@@ -41,12 +43,18 @@ public final class ManifestJson {
             }
             sb.append("] }");
         }
-        sb.append(m.enums().isEmpty() ? "]\n" : "\n  ]\n");
+        sb.append(m.enums().isEmpty() ? "],\n" : "\n  ],\n");
+        sb.append("  \"headers\": [");
+        for (int i = 0; i < m.headers().size(); i++) {
+            sb.append(i == 0 ? "\n" : ",\n");
+            writeMessage(sb, m.headers().get(i).def(), m.headers().get(i).roles());
+        }
+        sb.append(m.headers().isEmpty() ? "]\n" : "\n  ]\n");
         sb.append("}\n");
         return sb.toString();
     }
 
-    private static void writeMessage(StringBuilder sb, MessageDef d) {
+    private static void writeMessage(StringBuilder sb, MessageDef d, Map<String, HeaderRole> roles) {
         SchemaInfo s = d.info();
         sb.append("    {\n");
         sb.append("      \"name\": ").append(Json.quote(s.name())).append(",\n");
@@ -58,6 +66,15 @@ public final class ManifestJson {
         sb.append("      \"fingerprint\": ").append(Json.quote(Hex.int32(s.fingerprint()))).append(",\n");
         sb.append("      \"snapshot\": ").append(s.snapshot()).append(",\n");
         sb.append("      \"buildVersion\": ").append(Json.quote(s.buildVersion())).append(",\n");
+        if (roles != null) {
+            sb.append("      \"roles\": {");
+            boolean first = true;
+            for (Map.Entry<String, HeaderRole> e : roles.entrySet()) {
+                sb.append(first ? " " : ", ").append(Json.quote(e.getKey())).append(": ").append(Json.quote(e.getValue().name()));
+                first = false;
+            }
+            sb.append(roles.isEmpty() ? "},\n" : " },\n");
+        }
         sb.append("      \"fields\": [");
         for (int i = 0; i < d.fields().size(); i++) {
             FieldDef f = d.fields().get(i);
@@ -93,8 +110,17 @@ public final class ManifestJson {
             }
             enums.add(new EnumDef(str(e, "name"), constants));
         }
+        List<HeaderDef> headers = new ArrayList<>();
+        for (Object o : (List<Object>) root.getOrDefault("headers", List.of())) {
+            Map<String, Object> h = (Map<String, Object>) o;
+            Map<String, HeaderRole> roles = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : ((Map<String, Object>) h.getOrDefault("roles", Map.of())).entrySet()) {
+                roles.put(e.getKey(), HeaderRole.valueOf((String) e.getValue()));
+            }
+            headers.add(new HeaderDef(parseMessage(h), roles));
+        }
         return new Manifest(format, intOf(root, "wireVersion"), str(root, "module"), str(root, "buildVersion"),
-                Boolean.TRUE.equals(root.get("snapshot")), messages, enums);
+                Boolean.TRUE.equals(root.get("snapshot")), messages, enums, headers);
     }
 
     @SuppressWarnings("unchecked")

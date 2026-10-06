@@ -6,6 +6,7 @@ import sibarum.intrabuf.Header;
 import sibarum.intrabuf.IncompatiblePayloadException;
 import sibarum.intrabuf.IncompatiblePayloadException.Reason;
 import sibarum.intrabuf.schema.EnumDef;
+import sibarum.intrabuf.schema.HeaderDef;
 import sibarum.intrabuf.schema.Manifest;
 import sibarum.intrabuf.schema.MessageDef;
 
@@ -14,6 +15,9 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -25,6 +29,7 @@ public final class SchemaSet {
     private final List<MessageDef> messages = new ArrayList<>();
     private final Map<String, EnumDef> enums = new LinkedHashMap<>();
     private final List<Manifest> manifests = new ArrayList<>();
+    private final Map<String, HeaderDef> headers = new LinkedHashMap<>();
 
     public SchemaSet add(Manifest m) {
         manifests.add(m);
@@ -38,6 +43,9 @@ public final class SchemaSet {
         for (EnumDef e : m.enums()) {
             // Constants may only be appended, so the longer list knows everything the shorter one does.
             enums.merge(e.name(), e, (a, b) -> b.constants().size() > a.constants().size() ? b : a);
+        }
+        for (HeaderDef hd : m.headers()) {
+            headers.put(hd.name(), hd);
         }
         return this;
     }
@@ -56,6 +64,25 @@ public final class SchemaSet {
 
     public EnumDef enumDef(String name) {
         return enums.get(name);
+    }
+
+    public List<HeaderDef> headers() {
+        return List.copyOf(headers.values());
+    }
+
+    public HeaderDef header(String name) {
+        return headers.get(name);
+    }
+
+    /** One line per schema id used by more than one schema name: the collisions app-assigned ids can produce. */
+    public List<String> idCollisions() {
+        Map<Integer, Set<String>> names = new TreeMap<>();
+        for (MessageDef d : messages) {
+            names.computeIfAbsent(d.info().id(), k -> new TreeSet<>()).add(d.name());
+        }
+        return names.entrySet().stream().filter(e -> e.getValue().size() > 1)
+                .map(e -> "id " + Hex.int32(e.getKey()) + " is used by " + String.join(", ", e.getValue()))
+                .toList();
     }
 
     public List<MessageDef> byName(String name) {
@@ -82,6 +109,18 @@ public final class SchemaSet {
         if (byId.isEmpty()) {
             throw new IncompatiblePayloadException(Reason.SCHEMA_MISMATCH, "no loaded manifest has a schema with id "
                     + Hex.int32(h.schemaId()), null, h);
+        }
+        if (byId.stream().map(MessageDef::name).distinct().count() > 1) {
+            // App-assigned ids can collide across modules. A fingerprint can still say which schema this is.
+            List<MessageDef> byFp = h.hasFingerprint()
+                    ? byId.stream().filter(d -> d.info().fingerprint() == h.fingerprint()).toList() : List.of();
+            if (byFp.stream().map(MessageDef::name).distinct().count() != 1) {
+                throw new IncompatiblePayloadException(Reason.SCHEMA_MISMATCH, "id " + Hex.int32(h.schemaId())
+                        + " is used by more than one loaded schema: " + byId.stream().map(MessageDef::name).distinct()
+                        .collect(Collectors.joining(", ")), null, h);
+            }
+            String only = byFp.getFirst().name();
+            byId = byId.stream().filter(d -> d.name().equals(only)).toList();
         }
         String name = byId.getFirst().name();
         List<MessageDef> candidates = byId.stream()

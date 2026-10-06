@@ -66,14 +66,33 @@ public abstract class MessageCodec<T> {
      * payload is from a newer minor of a FULL schema, in which case they are fields this reader does not know.
      */
     public final T decode(IbReader r) {
-        int minor;
         if (r.startsWith(header)) {
             // Byte-identical header: same schema, version, mode and (if present) fingerprint. Skip the checks.
             r.skip(header.length);
-            minor = schema.minor();
-        } else {
-            minor = Compatibility.check(schema, Header.read(r));
+            return finish(r, schema.minor());
         }
+        return decodeBody(Header.read(r), r);
+    }
+
+    // ---- with an application's own header (see HeaderCodec) ----------------------------------------------------
+
+    /** Appends just the body of {@code value}, for a payload whose header the application writes itself. */
+    public final void encodeBody(T value, IbWriter w) {
+        if (value == null) {
+            throw new IntrabufException("cannot encode a null " + schema.name());
+        }
+        writeBody(w, value);
+    }
+
+    /**
+     * Checks a header the application read itself against this codec's schema, then decodes the body, which must
+     * occupy the rest of {@code r} (with the same trailing-bytes rule as {@link #decode(IbReader)}).
+     */
+    public final T decodeBody(Header h, IbReader r) {
+        return finish(r, Compatibility.check(schema, h));
+    }
+
+    private T finish(IbReader r, int minor) {
         T value = readBody(r, minor);
         if (r.remaining() != 0 && minor <= schema.minor()) {
             throw new IntrabufException(r.remaining() + " trailing byte(s) after " + schema.name() + " payload");

@@ -1,9 +1,12 @@
 package sibarum.intrabuf.processor;
 
 import sibarum.intrabuf.Compat;
+import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.SchemaInfo;
 import sibarum.intrabuf.annotation.Field;
+import sibarum.intrabuf.annotation.IntrabufHeader;
 import sibarum.intrabuf.annotation.IntrabufMessage;
+import sibarum.intrabuf.annotation.Role;
 import sibarum.intrabuf.processor.MessageModel.FieldModel;
 import sibarum.intrabuf.schema.EnumDef;
 import sibarum.intrabuf.schema.Fingerprint;
@@ -147,48 +150,69 @@ final class Models {
 
     private MessageModel buildOne(TypeElement te, boolean external) {
         boolean ok = true;
+        IntrabufMessage ann = te.getAnnotation(IntrabufMessage.class);
+        IntrabufHeader headerAnn = te.getAnnotation(IntrabufHeader.class);
+        boolean header = headerAnn != null;
+        String what = header ? "@IntrabufHeader" : "@IntrabufMessage";
         if (te.getKind() != ElementKind.RECORD) {
-            error(te, "@IntrabufMessage applies only to records; " + te.getSimpleName() + " is a " + te.getKind().toString().toLowerCase());
+            error(te, what + " applies only to records; " + te.getSimpleName() + " is a " + te.getKind().toString().toLowerCase());
             return null;
         }
-        IntrabufMessage ann = te.getAnnotation(IntrabufMessage.class);
-        if (ann == null) {
+        if (ann == null && !header) {
             error(te, te.getQualifiedName() + " is used as a message but is not annotated @IntrabufMessage");
             return null;
         }
+        if (ann != null && header) {
+            error(te, "a record is either an @IntrabufMessage or an @IntrabufHeader, not both");
+            return null;
+        }
         if (!te.getTypeParameters().isEmpty()) {
-            error(te, "@IntrabufMessage records cannot be generic");
+            error(te, what + " records cannot be generic");
             ok = false;
         }
         for (Element e = te; e instanceof TypeElement; e = e.getEnclosingElement()) {
             if (e.getModifiers().contains(Modifier.PRIVATE)) {
-                error(te, "@IntrabufMessage records and their enclosing classes must not be private: the codec is a separate class in the same package");
+                error(te, what + " records and their enclosing classes must not be private: the codec is a separate class in the same package");
                 ok = false;
                 break;
             }
             if (e.getEnclosingElement() != null && !(e.getEnclosingElement() instanceof TypeElement)
                     && !(e.getEnclosingElement() instanceof PackageElement)) {
-                error(te, "@IntrabufMessage records cannot be local to a method");
+                error(te, what + " records cannot be local to a method");
                 ok = false;
                 break;
             }
         }
-        String schemaName = schemaName(te);
+        String schemaName = header
+                ? (headerAnn.name().isEmpty() ? te.getQualifiedName().toString() : headerAnn.name())
+                : schemaName(te);
         if (schemaName.isBlank() || schemaName.chars().anyMatch(c -> c == '<' || c == '>' || c == ',' || Character.isWhitespace(c))) {
             error(te, "schema name '" + schemaName + "' must be non-empty and contain no whitespace, '<', '>' or ','");
             ok = false;
         }
-        if (ann.major() < 0 || ann.minor() < 0) {
+        // A header is a fixed layout: STRICT and unversioned, because the application's protocol versions it.
+        int major = header ? 1 : ann.major();
+        int minor = header ? 0 : ann.minor();
+        Compat compat = header ? Compat.STRICT : ann.compat();
+        if (major < 0 || minor < 0) {
             error(te, "major and minor must be non-negative");
             ok = false;
         }
-        Compat compat = ann.compat();
+        int id = Fingerprint.schemaId(schemaName);
+        if (!header && ann.id().length > 1) {
+            error(te, "id takes one value");
+            ok = false;
+        } else if (!header && ann.id().length == 1) {
+            id = ann.id()[0];
+        }
 
         List<FieldModel> fields = new ArrayList<>();
+        Map<String, HeaderRole> roles = new LinkedHashMap<>();
         int lastSince = 0;
         boolean warnedStrictSince = false;
         for (RecordComponentElement rc : te.getRecordComponents()) {
-            Field fa = fieldAnnotation(te, rc);
+            Field fa = annotation(te, rc, Field.class);
+            Role role = annotation(te, rc, Role.class);
             int since = fa == null ? 0 : fa.since();
             boolean fixed = fa != null && fa.fixed();
             boolean nonNullDeclared = (fa != null && fa.nonNull()) || hasNonNullAnnotation(rc);
@@ -205,14 +229,31 @@ final class Models {
                 error(rc, where + ": @Field(fixed = true) applies only to int and long values");
                 ok = false;
             }
+            if (role != null) {
+                if (!header) {
+                    error(rc, where + ": @Role is only meaningful in an @IntrabufHeader record");
+                    ok = false;
+                } else if (roles.containsValue(role.value())) {
+                    error(rc, where + ": role " + role.value() + " is already carried by another component");
+                    ok = false;
+                } else if (!checkRole(rc, where, role.value(), jt)) {
+                    ok = false;
+                } else {
+                    roles.put(rc.getSimpleName().toString(), role.value());
+                    // Role components are always present, except a fingerprint, which is absent when not needed.
+                    if (role.value() != HeaderRole.FINGERPRINT && !primitive) {
+                        nonNullDeclared = true;
+                    }
+                }
+            }
             if (nonNullDeclared && (primitive || optional)) {
                 warn(rc, where + ": nonNull has no effect on a " + (primitive ? "primitive" : "Optional"));
                 nonNullDeclared = false;
             }
             boolean nullable = !primitive && !optional && !nonNullDeclared;
 
-            if (since < 0 || since > ann.minor()) {
-                error(rc, where + ": since = " + since + " must be between 0 and the message's minor (" + ann.minor() + ")");
+            if (since < 0 || since > minor) {
+                error(rc, where + ": since = " + since + " must be between 0 and the message's minor (" + minor + ")");
                 ok = false;
             }
             if (compat == Compat.STRICT) {
@@ -236,27 +277,61 @@ final class Models {
             String accessor = rc.getAccessor() == null ? rc.getSimpleName().toString() : rc.getAccessor().getSimpleName().toString();
             fields.add(new FieldModel(rc.getSimpleName().toString(), accessor, jt, nullable, nonNullDeclared, since));
         }
+        if (header && ok) {
+            for (HeaderRole r : HeaderRole.values()) {
+                if (!roles.containsValue(r)) {
+                    error(te, "@IntrabufHeader " + te.getSimpleName() + " has no component with @Role(" + r
+                            + "); every role must be carried so readers can check compatibility");
+                    ok = false;
+                }
+            }
+        }
         if (!ok) {
             return null;
         }
         String codec = codecName(te);
         recordByCodec.put(codec, te.getQualifiedName().toString());
-        return new MessageModel(te, schemaName, te.getQualifiedName().toString(), codec, ann.major(), ann.minor(),
-                compat, fields, external);
+        return new MessageModel(te, schemaName, te.getQualifiedName().toString(), codec, id, major, minor,
+                compat, fields, external, header, roles);
+    }
+
+    /** Whether a component's type can carry {@code role}; reports why not. */
+    private boolean checkRole(Element rc, String where, HeaderRole role, JType t) {
+        String j = t.javaName();
+        boolean ok = switch (role) {
+            case WIRE_VERSION, MAJOR, MINOR -> j.equals("byte") || j.equals("short") || j.equals("int");
+            case SCHEMA_ID -> j.equals("int");
+            case COMPAT -> t.ref() instanceof TypeRef.EnumRef e && e.name().equals(Compat.class.getCanonicalName());
+            case SNAPSHOT -> j.equals("boolean");
+            case FINGERPRINT -> j.equals("int") || j.equals("java.lang.Integer");
+        };
+        if (!ok) {
+            String want = switch (role) {
+                case WIRE_VERSION, MAJOR, MINOR -> "byte, short or int";
+                case SCHEMA_ID -> "int";
+                case COMPAT -> Compat.class.getCanonicalName();
+                case SNAPSHOT -> "boolean";
+                case FINGERPRINT -> "Integer (null when absent) or int";
+            };
+            error(rc, where + ": @Role(" + role + ") must be " + want + ", not " + j);
+        } else if (role == HeaderRole.FINGERPRINT && !t.ref().isScalar(ScalarKind.FIXED32)) {
+            warn(rc, where + ": the fingerprint is a hash, so as a varint it averages 5 bytes; @Field(fixed = true) makes it 4");
+        }
+        return ok;
     }
 
     /**
-     * {@code @Field} on the record component, or failing that on the private field javac propagates it to; the
-     * second is a fallback for records read from class files.
+     * {@code @Field} or {@code @Role} on the record component, or failing that on the private field javac
+     * propagates it to; the second is a fallback for records read from class files.
      */
-    private static Field fieldAnnotation(TypeElement te, RecordComponentElement rc) {
-        Field f = rc.getAnnotation(Field.class);
-        if (f != null) {
-            return f;
+    private static <A extends java.lang.annotation.Annotation> A annotation(TypeElement te, RecordComponentElement rc, Class<A> type) {
+        A a = rc.getAnnotation(type);
+        if (a != null) {
+            return a;
         }
         for (Element e : te.getEnclosedElements()) {
             if (e.getKind() == ElementKind.FIELD && e.getSimpleName().equals(rc.getSimpleName())) {
-                return e.getAnnotation(Field.class);
+                return e.getAnnotation(type);
             }
         }
         return null;
@@ -422,12 +497,27 @@ final class Models {
      */
     boolean link() {
         boolean ok = true;
-        Map<Integer, String> ids = new HashMap<>();
+        Map<Integer, String> nameById = new HashMap<>();
+        Map<String, MessageModel> byName = new HashMap<>();
         for (MessageModel m : models.values()) {
-            String other = ids.putIfAbsent(Fingerprint.schemaId(m.schemaName()), m.schemaName());
+            if (m.header()) {
+                // A header has no id on the wire; it is the thing that carries ids.
+                for (FieldModel f : m.fields()) {
+                    ok &= checkNesting(m, f, f.type());
+                }
+                continue;
+            }
+            String other = nameById.putIfAbsent(m.id(), m.schemaName());
             if (other != null && !other.equals(m.schemaName())) {
-                error(m.element(), "schema names '" + other + "' and '" + m.schemaName()
-                        + "' hash to the same id; rename one with @IntrabufMessage(name = ...)");
+                error(m.element(), "schemas '" + other + "' and '" + m.schemaName() + "' have the same id "
+                        + sibarum.intrabuf.Hex.int32(m.id()) + "; give one a different @IntrabufMessage(id = ...)"
+                        + " or, for derived ids, a different name");
+                ok = false;
+            }
+            MessageModel sameName = byName.putIfAbsent(m.schemaName(), m);
+            if (sameName != null && sameName.id() != m.id()) {
+                error(m.element(), m.javaName() + " and " + sameName.javaName() + " are both schema '" + m.schemaName()
+                        + "' but have different ids; every version of a schema must keep its id");
                 ok = false;
             }
             for (FieldModel f : m.fields()) {

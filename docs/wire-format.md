@@ -19,6 +19,14 @@ Compat: `0` STRICT, `1` BACKWARD, `2` FULL. A release BACKWARD/FULL header is 8 
 Reserved flag bits set, or a wire version other than 1, mean a newer intrabuf wrote the payload: readers reject it
 rather than guess.
 
+### Application headers
+
+An `@IntrabufHeader` record replaces the built-in header. It is encoded as a STRICT body (bitset, then fields) with
+no header of its own. Its components marked `@Role` carry the same facts: wire version, schema id, major, minor,
+compat (an enum ordinal), snapshot (a bit), and fingerprint (absent when null). There is no magic. The application's
+own framing identifies its frames. Readers apply the same compatibility decision below to the facts, and also reject
+a negative major or minor, which signed header fields can express.
+
 ## Body
 
 ```

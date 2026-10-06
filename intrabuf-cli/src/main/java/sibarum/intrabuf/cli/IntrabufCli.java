@@ -1,13 +1,16 @@
 package sibarum.intrabuf.cli;
 
 import sibarum.intrabuf.Header;
+import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.Hex;
 import sibarum.intrabuf.IntrabufException;
 import sibarum.intrabuf.SchemaInfo;
+import sibarum.intrabuf.dynamic.DynValue;
 import sibarum.intrabuf.dynamic.DynamicDecoder;
 import sibarum.intrabuf.dynamic.SchemaSet;
 import sibarum.intrabuf.schema.EnumDef;
 import sibarum.intrabuf.schema.FieldDef;
+import sibarum.intrabuf.schema.HeaderDef;
 import sibarum.intrabuf.schema.Json;
 import sibarum.intrabuf.schema.MessageDef;
 
@@ -22,6 +25,8 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * {@code intrabuf}: inspect payloads using the manifests builds emit. See {@link #USAGE}.
@@ -32,16 +37,19 @@ public final class IntrabufCli {
             usage: intrabuf <command> [options]
 
             commands:
-              decode  -m <manifest>... [--json] [--hex|--base64] <payload>
+              decode  -m <manifest>... [--header <name>] [--json] [--hex|--base64] <payload>
                       Print a payload's header and contents.
-              header  [--hex|--base64] <payload>
-                      Print a payload's header; needs no manifest.
+              header  [-m <manifest>... --header <name>] [--json] [--hex|--base64] <payload>
+                      Print a payload's header; needs no manifest for the built-in header.
               schemas -m <manifest>...
-                      List the schemas the manifests describe.
+                      List the schemas and header formats the manifests describe.
               schema  -m <manifest>... <name>
-                      Show every loaded version of one schema, field by field.
+                      Show every loaded version of one schema (or a header format), field by field.
 
             <payload> is a file, or '-' for stdin. With --hex or --base64 it is the payload itself, as text.
+
+            --header <name>         The payload starts with an application header (@IntrabufHeader) rather than
+                                    intrabuf's built-in one: a frame as the application writes it.
 
             -m, --manifest <path>   A manifest .json, a jar holding META-INF/intrabuf/*.json, or a directory
                                     searched for them (target/classes, or a whole project). Repeatable; load
@@ -74,6 +82,7 @@ public final class IntrabufCli {
         final List<String> positional = new ArrayList<>();
         boolean json;
         String encoding; // null, "hex" or "base64"
+        String header;   // application header format name, or null for the built-in header
     }
 
     int run(String[] args) {
@@ -113,6 +122,12 @@ public final class IntrabufCli {
                         throw new UsageException(a + " needs a path");
                     }
                     o.manifests.add(Path.of(args[i]));
+                }
+                case "--header" -> {
+                    if (++i >= args.length) {
+                        throw new UsageException("--header needs a header format name");
+                    }
+                    o.header = args[i];
                 }
                 case "--json" -> o.json = true;
                 case "--hex" -> o.encoding = "hex";
@@ -171,13 +186,48 @@ public final class IntrabufCli {
 
     // ---- commands ----------------------------------------------------------------------------------------------
 
+    private HeaderDef headerFormat(Options o, SchemaSet set) throws UsageException {
+        if (o.header == null) {
+            return null;
+        }
+        HeaderDef hd = set.header(o.header);
+        if (hd == null) {
+            hd = set.headers().stream().filter(x -> x.def().info().javaType().equals(o.header)).findFirst().orElse(null);
+        }
+        if (hd == null) {
+            throw new UsageException("no loaded manifest defines header format '" + o.header + "'; known: "
+                    + set.headers().stream().map(HeaderDef::name).toList());
+        }
+        return hd;
+    }
+
     private int header(Options o) throws IOException, UsageException {
+        SchemaSet set = o.header == null ? null : schemaSet(o);
+        HeaderDef format = o.header == null ? null : headerFormat(o, set);
         byte[] payload = payload(o);
-        Header h = Header.peek(payload);
+        Header h;
+        DynValue.DynMessage frame = null;
+        if (format == null) {
+            h = Header.peek(payload);
+        } else {
+            DynamicDecoder.Frame f = new DynamicDecoder(set).readFrame(payload, format);
+            h = f.facts();
+            frame = f.record();
+        }
         if (o.json) {
-            out.println(headerJson(h, payload.length));
+            StringBuilder sb = new StringBuilder(headerJson(h, payload.length));
+            if (frame != null) {
+                sb.setLength(sb.length() - 1);
+                sb.append(", \"frame\": ");
+                Render.json(sb, frame, 0);
+                sb.append('}');
+            }
+            out.println(sb);
         } else {
             printHeader(h, payload);
+            if (frame != null) {
+                out.println("frame     " + Render.tree(frame).replace("\n", "\n          "));
+            }
         }
         return 0;
     }
@@ -194,12 +244,17 @@ public final class IntrabufCli {
 
     private int decode(Options o) throws IOException, UsageException {
         SchemaSet set = schemaSet(o);
+        HeaderDef format = headerFormat(o, set);
         byte[] payload = payload(o);
-        DynamicDecoder.Decoded d = new DynamicDecoder(set).decode(payload);
+        DynamicDecoder.Decoded d = new DynamicDecoder(set).decode(payload, format);
         SchemaInfo s = d.schema().info();
         if (o.json) {
             StringBuilder sb = new StringBuilder();
             sb.append("{\n  \"header\": ").append(headerJson(d.header(), payload.length));
+            if (d.frame() != null) {
+                sb.append(",\n  \"frame\": ");
+                Render.json(sb, d.frame(), 1);
+            }
             sb.append(",\n  \"schema\": {\"name\": ").append(Json.quote(s.name()))
                     .append(", \"javaType\": ").append(Json.quote(s.javaType()))
                     .append(", \"version\": ").append(Json.quote(s.version()))
@@ -224,6 +279,9 @@ public final class IntrabufCli {
         for (String w : d.warnings()) {
             out.println("# warning: " + w);
         }
+        if (d.frame() != null) {
+            out.println("# frame: " + Render.tree(d.frame()).replace("\n", "\n# "));
+        }
         out.println(Render.tree(d.value()));
         return 0;
     }
@@ -242,6 +300,14 @@ public final class IntrabufCli {
         for (EnumDef e : set.enums()) {
             out.println(pad(e.name(), width + 1) + " enum   " + String.join(", ", e.constants()));
         }
+        for (HeaderDef h : set.headers()) {
+            out.println(pad(h.name(), width + 1) + " header fp " + Hex.int32(h.def().info().fingerprint()) + "  "
+                    + h.def().fields().size() + " field(s)  roles: " + h.roles().entrySet().stream()
+                    .map(e -> e.getKey() + "=" + e.getValue()).collect(Collectors.joining(", ")));
+        }
+        for (String c : set.idCollisions()) {
+            out.println("warning: " + c);
+        }
         return 0;
     }
 
@@ -254,6 +320,14 @@ public final class IntrabufCli {
         List<MessageDef> defs = new ArrayList<>(set.byName(name));
         if (defs.isEmpty()) {
             defs.addAll(set.messages().stream().filter(d -> d.info().javaType().equals(name)).toList());
+        }
+        Map<String, HeaderRole> roles = Map.of();
+        if (defs.isEmpty()) {
+            HeaderDef h = set.header(name);
+            if (h != null) {
+                defs.add(h.def());
+                roles = h.roles();
+            }
         }
         if (defs.isEmpty()) {
             EnumDef e = set.enumDef(name);
@@ -270,16 +344,24 @@ public final class IntrabufCli {
         defs.sort(Comparator.comparingInt(MessageDef::major).thenComparingInt(MessageDef::minor));
         for (MessageDef d : defs) {
             SchemaInfo s = d.info();
-            out.println(s.name() + " v" + s.version() + " " + s.compat() + "  (" + s.javaType() + ")");
-            out.println("  id " + Hex.int32(s.id()) + "  fingerprint " + Hex.int32(s.fingerprint()) + "  build "
-                    + s.buildVersion() + (s.snapshot() ? " (snapshot)" : ""));
+            boolean isHeader = !roles.isEmpty();
+            if (isHeader) {
+                out.println(s.name() + " header format  (" + s.javaType() + ")");
+                out.println("  fingerprint " + Hex.int32(s.fingerprint()) + "  build " + s.buildVersion());
+            } else {
+                out.println(s.name() + " v" + s.version() + " " + s.compat() + "  (" + s.javaType() + ")");
+                out.println("  id " + Hex.int32(s.id()) + "  fingerprint " + Hex.int32(s.fingerprint()) + "  build "
+                        + s.buildVersion() + (s.snapshot() ? " (snapshot)" : ""));
+            }
             int nw = Math.max(5, d.fields().stream().mapToInt(f -> f.name().length()).max().orElse(0));
             int tw = Math.max(4, d.fields().stream().mapToInt(f -> f.type().toString().length()).max().orElse(0));
-            out.println("  " + pad("#", 3) + pad("field", nw + 2) + pad("type", tw + 2) + pad("null", 6) + "since");
+            out.println("  " + pad("#", 3) + pad("field", nw + 2) + pad("type", tw + 2) + pad("null", 6)
+                    + (isHeader ? "role" : "since"));
             for (int i = 0; i < d.fields().size(); i++) {
                 FieldDef f = d.fields().get(i);
+                HeaderRole role = roles.get(f.name());
                 out.println("  " + pad(String.valueOf(i), 3) + pad(f.name(), nw + 2) + pad(f.type().toString(), tw + 2)
-                        + pad(f.nullable() ? "yes" : "no", 6) + f.since());
+                        + pad(f.nullable() ? "yes" : "no", 6) + (isHeader ? (role == null ? "-" : role.name()) : f.since()));
             }
             out.println();
         }
@@ -289,7 +371,7 @@ public final class IntrabufCli {
     private static String headerJson(Header h, int payloadSize) {
         return "{\"wireVersion\": " + h.wireVersion() + ", \"schemaId\": " + Json.quote(Hex.int32(h.schemaId()))
                 + ", \"major\": " + h.major() + ", \"minor\": " + h.minor()
-                + ", \"compat\": " + Json.quote(h.compat().name()) + ", \"snapshot\": " + h.snapshot()
+                + ", \"compat\": " + (h.compat() == null ? "null" : Json.quote(h.compat().name())) + ", \"snapshot\": " + h.snapshot()
                 + ", \"fingerprint\": " + (h.hasFingerprint() ? Json.quote(Hex.int32(h.fingerprint())) : "null")
                 + ", \"headerBytes\": " + h.size() + ", \"payloadBytes\": " + payloadSize + "}";
     }

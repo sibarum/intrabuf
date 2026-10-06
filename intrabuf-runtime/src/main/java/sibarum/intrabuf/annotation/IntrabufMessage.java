@@ -27,6 +27,14 @@ public @interface IntrabufMessage {
     /** Schema name, hashed into the wire id. Defaults to the record's canonical name; set it to survive a rename. */
     String name() default "";
 
+    /**
+     * The schema id on the wire. Empty (the default) derives it by hashing {@link #name()}; set it ({@code id = 7})
+     * when the application assigns ids itself, e.g. to route by a type id in its own header. Every version of a
+     * schema must keep the same id, and no two schemas may share one; the processor checks both within a
+     * compilation, and {@code intrabuf schemas} reports collisions between manifests.
+     */
+    int[] id() default {};
+
     /** Breaking-change version. Readers reject every major but their own. */
     int major() default 1;
 

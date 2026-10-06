@@ -2,9 +2,10 @@ package sibarum.intrabuf.processor;
 
 import sibarum.intrabuf.Header;
 import sibarum.intrabuf.SchemaInfo;
+import sibarum.intrabuf.annotation.IntrabufHeader;
 import sibarum.intrabuf.annotation.IntrabufMessage;
+import sibarum.intrabuf.schema.HeaderDef;
 import sibarum.intrabuf.schema.EnumDef;
-import sibarum.intrabuf.schema.Fingerprint;
 import sibarum.intrabuf.schema.Manifest;
 import sibarum.intrabuf.schema.ManifestJson;
 import sibarum.intrabuf.schema.MessageDef;
@@ -57,7 +58,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
-        return Set.of(IntrabufMessage.class.getCanonicalName());
+        return Set.of(IntrabufMessage.class.getCanonicalName(), IntrabufHeader.class.getCanonicalName());
     }
 
     @Override
@@ -90,7 +91,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
             return false;
         }
         List<TypeElement> records = new ArrayList<>();
-        for (Element e : round.getElementsAnnotatedWith(IntrabufMessage.class)) {
+        for (Element e : round.getElementsAnnotatedWithAny(Set.of(IntrabufMessage.class, IntrabufHeader.class))) {
             if (e instanceof TypeElement te) {
                 records.add(te);
                 models.markLocal(te);
@@ -137,14 +138,21 @@ public final class IntrabufProcessor extends AbstractProcessor {
 
     private void writeManifest() {
         List<MessageDef> messages = new ArrayList<>();
+        List<HeaderDef> headers = new ArrayList<>();
         for (MessageModel m : models.all().values()) {
-            messages.add(new MessageDef(info(m), m.defs()));
+            if (!m.header()) {
+                messages.add(new MessageDef(info(m), m.defs()));
+            } else if (!m.external()) {
+                headers.add(new HeaderDef(new MessageDef(info(m), m.defs()), m.roles()));
+            }
         }
+        headers.sort(Comparator.comparing(HeaderDef::name));
         messages.sort(Comparator.comparing(MessageDef::name).thenComparingInt(MessageDef::major)
                 .thenComparingInt(MessageDef::minor).thenComparing(d -> d.info().javaType()));
         List<EnumDef> enums = new ArrayList<>(models.enums().values());
         enums.sort(Comparator.comparing(EnumDef::name));
-        Manifest manifest = new Manifest(Manifest.FORMAT, Header.WIRE_VERSION, module, buildVersion, snapshot, messages, enums);
+        Manifest manifest = new Manifest(Manifest.FORMAT, Header.WIRE_VERSION, module, buildVersion, snapshot, messages, enums,
+                headers);
         String path = Manifest.RESOURCE_DIR + module + ".json";
         try {
             FileObject file = processingEnv.getFiler().createResource(StandardLocation.CLASS_OUTPUT, "", path,
@@ -184,7 +192,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
                 }
             }
         }
-        return new SchemaInfo(m.schemaName(), m.javaName(), Fingerprint.schemaId(m.schemaName()), m.major(), m.minor(),
+        return new SchemaInfo(m.schemaName(), m.javaName(), m.id(), m.major(), m.minor(),
                 m.compat(), fp, snap, version);
     }
 

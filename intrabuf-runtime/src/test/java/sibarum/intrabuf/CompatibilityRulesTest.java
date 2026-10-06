@@ -81,6 +81,16 @@ class CompatibilityRulesTest {
     }
 
     @Test
+    void malformedFactsFromApplicationHeaders() {
+        SchemaInfo r = s(1, 2, Compat.BACKWARD, FP, false);
+        assertThrows(IntrabufException.class, () -> Compatibility.check(r, new Header(1, false, Compat.BACKWARD, ID, 1, -3, false, 0, -1)));
+        assertEquals(Reason.UNSUPPORTED_WIRE_VERSION, assertThrows(IncompatiblePayloadException.class,
+                () -> Compatibility.check(r, new Header(2, false, Compat.BACKWARD, ID, 1, 0, false, 0, -1))).reason());
+        assertEquals(Reason.COMPAT_MISMATCH, assertThrows(IncompatiblePayloadException.class,
+                () -> Compatibility.check(r, new Header(1, false, null, ID, 1, 0, false, 0, -1))).reason());
+    }
+
+    @Test
     void nesting() {
         assertEquals(true, Compat.STRICT.canContain(Compat.STRICT));
         assertEquals(true, Compat.STRICT.canContain(Compat.FULL));

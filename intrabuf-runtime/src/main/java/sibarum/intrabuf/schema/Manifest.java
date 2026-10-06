@@ -12,9 +12,10 @@ import java.util.List;
  * @param module       name the build gave itself ({@code -Aintrabuf.module})
  * @param buildVersion version of the build ({@code -Aintrabuf.buildVersion})
  * @param snapshot     whether the build was a snapshot
+ * @param headers      the build's own {@code @IntrabufHeader} formats
  */
 public record Manifest(int format, int wireVersion, String module, String buildVersion, boolean snapshot,
-                       List<MessageDef> messages, List<EnumDef> enums) {
+                       List<MessageDef> messages, List<EnumDef> enums, List<HeaderDef> headers) {
 
     public static final int FORMAT = 1;
     public static final String RESOURCE_DIR = "META-INF/intrabuf/";
@@ -22,5 +23,6 @@ public record Manifest(int format, int wireVersion, String module, String buildV
     public Manifest {
         messages = List.copyOf(messages);
         enums = List.copyOf(enums);
+        headers = List.copyOf(headers);
     }
 }

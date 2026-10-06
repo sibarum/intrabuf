@@ -12,6 +12,7 @@ public final class Compatibility {
      * Returns the minor version to decode the body with, or throws.
      *
      * <ol>
+     *   <li>The body must be in this runtime's wire format version.</li>
      *   <li>Schema id, major and compat mode must match. A major mismatch is never decodable.</li>
      *   <li>STRICT: the minor and the fingerprint must match as well.</li>
      *   <li>If the payload carries the reader's fingerprint, the structures are identical: decode.</li>
@@ -21,6 +22,17 @@ public final class Compatibility {
      * </ol>
      */
     public static int check(SchemaInfo reader, Header h) {
+        if (h.wireVersion() != Header.WIRE_VERSION) {
+            throw fail(Reason.UNSUPPORTED_WIRE_VERSION, "body is wire format version " + h.wireVersion()
+                    + "; this runtime reads version " + Header.WIRE_VERSION, reader, h);
+        }
+        if (h.compat() == null) {
+            throw fail(Reason.COMPAT_MISMATCH, "header carries no compat mode", reader, h);
+        }
+        if (h.major() < 0 || h.minor() < 0) {
+            // The built-in header cannot express these; an application header's signed fields can.
+            throw new IntrabufException("header version " + h.version() + " is negative; the header is corrupt");
+        }
         if (h.schemaId() != reader.id()) {
             throw fail(Reason.SCHEMA_MISMATCH, "payload schema id " + Hex.int32(h.schemaId()) + " is not "
                     + reader.name() + " (" + Hex.int32(reader.id()) + ")", reader, h);

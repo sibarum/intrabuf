@@ -89,6 +89,45 @@ and snapshot builds spend 12. Readers decide from the header alone whether they 
 Failures throw `IncompatiblePayloadException` with a `Reason`, the reader's `SchemaInfo` and the payload's `Header`.
 Malformed input of any kind throws `IntrabufException`. The fuzz tests check that nothing else escapes.
 
+### Your own header
+
+An application that already frames its messages can put intrabuf's facts in its own header instead of adding the
+built-in one in front of it. Declare the header as a record. Components marked `@Role` carry the facts, each role
+exactly once. The other components are the application's, encoded like any other field:
+
+```java
+@IntrabufHeader(name = "app.Envelope")
+public record Envelope(
+        short magic,
+        @Role(WIRE_VERSION) byte wire,
+        @Role(SCHEMA_ID) int typeId,                       // pair with @IntrabufMessage(id = 7) to route by your ids
+        @Role(MAJOR) short major,
+        @Role(MINOR) short minor,
+        @Role(COMPAT) Compat compat,
+        @Role(SNAPSHOT) boolean snapshot,                  // a bit, packed with the other booleans
+        @Role(FINGERPRINT) @Field(fixed = true) Integer fingerprint,  // null when not needed: no bytes, one bit
+        boolean request,
+        @Field(fixed = true) long correlationId) {
+}
+
+// write
+EnvelopeIntrabuf.CODEC.write(w, EnvelopeIntrabuf.create(PingIntrabuf.SCHEMA, magic, request, correlationId));
+PingIntrabuf.CODEC.encodeBody(ping, w);
+
+// read: route on the facts, then decode; the compatibility checks run exactly as with the built-in header
+HeaderCodec.Frame<Envelope> f = EnvelopeIntrabuf.CODEC.readFrame(r);
+Object msg = registry.get(f.facts().schemaId()).decodeBody(f.facts(), r);
+```
+
+`create` fills the role components from a message's schema and takes the application's components as arguments.
+It refuses a version that doesn't fit a `byte` or `short` field. The processor rejects a header that is missing a
+role, carries one twice, or gives one the wrong type. The header layout goes in the manifest, so
+`intrabuf decode --header app.Envelope` reads whole frames.
+
+`@IntrabufMessage(id = …)` sets a schema's id explicitly. Without it, the id is a hash of the name. The processor
+checks that no two schemas share an id and that every version of a schema keeps its id, within one compilation;
+`intrabuf schemas` warns about collisions between loaded manifests.
+
 ### Evolving a schema
 
 Fields are positional, which is why payloads are small: no tags, no field names on the wire. So:
@@ -161,8 +200,9 @@ example.Customer @minor 2 {
 ```
 
 * `decode -m <manifest>... [--json] [--hex|--base64] <payload|->`: header plus contents, as a tree or as JSON.
-* `header <payload>`: the header alone. No manifest needed.
-* `schemas -m ...` and `schema -m ... <name>`: what the manifests describe.
+* `header <payload>`: the header alone. No manifest needed for the built-in header.
+* `--header <name>` (on `decode` and `header`): the payload is a frame with an application header.
+* `schemas -m ...` and `schema -m ... <name>`: what the manifests describe, header formats included.
 
 `-m` takes a manifest `.json`, a jar, or a directory (searched for `META-INF/intrabuf/*.json`). It is repeatable, so
 load several releases' manifests and the CLI will pick the version each payload was written with.

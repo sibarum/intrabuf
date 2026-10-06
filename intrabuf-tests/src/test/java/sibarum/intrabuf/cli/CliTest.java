@@ -110,6 +110,33 @@ class CliTest {
     }
 
     @Test
+    void decodesApplicationFrames() {
+        sibarum.intrabuf.IbWriter w = new sibarum.intrabuf.IbWriter();
+        var codec = sibarum.intrabuf.tests.HeaderSchemas_PongIntrabuf.CODEC;
+        sibarum.intrabuf.tests.HeaderSchemas_EnvelopeIntrabuf.CODEC.write(w,
+                sibarum.intrabuf.tests.HeaderSchemas_EnvelopeIntrabuf.create(codec.schema(), (short) 1, (byte) 2, false, true, 555L));
+        codec.encodeBody(new sibarum.intrabuf.tests.HeaderSchemas.Pong(7, "framed"), w);
+        String hex = HexFormat.of().formatHex(w.toByteArray());
+        String tests = location("META-INF/intrabuf/intrabuf-tests.json").toString();
+
+        Result r = run(new byte[0], "decode", "-m", tests, "-m", exampleManifests(), "--header", "test.Envelope", "--hex", hex);
+        assertEquals(0, r.code(), r.err());
+        assertTrue(r.out().contains("correlationId: 555"), r.out());
+        assertTrue(r.out().contains("note: \"framed\""), r.out());
+
+        Result h = run(new byte[0], "header", "-m", tests, "--header", "test.Envelope", "--hex", hex);
+        assertEquals(0, h.code(), h.err());
+        assertTrue(h.out().contains("schema id 0x00000003"), h.out());
+
+        Result s = run(new byte[0], "schema", "-m", tests, "test.Envelope");
+        assertEquals(0, s.code(), s.err());
+        assertTrue(s.out().contains("SCHEMA_ID"), s.out());
+
+        Result missing = run(new byte[0], "decode", "-m", tests, "--header", "nope", "--hex", hex);
+        assertEquals(2, missing.code());
+    }
+
+    @Test
     void usageErrorsExitWith2() {
         assertEquals(2, run(new byte[0]).code());
         assertEquals(2, run(new byte[0], "frobnicate").code());
