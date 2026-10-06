@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.intrabuf</groupId>
+        <artifactId>intrabuf</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>intrabuf-cli</artifactId>
+
+    <name>intrabuf-cli</name>
+    <description>
+        Inspect payloads from a terminal: load manifests (JSON files, jars or class directories), then print a
+        payload's header, the schema it was written with, and its contents as an indented tree or JSON.
+    </description>
+
+    <properties>
+        <app.mainClass>sibarum.intrabuf.cli.IntrabufCli</app.mainClass>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.intrabuf</groupId>
+            <artifactId>intrabuf-runtime</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>${app.mainClass}</mainClass>
+                            <addClasspath>true</addClasspath>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+          Single native executable: mvn -Pnative -DskipTests package, from the repository root. Nothing in the CLI
+          or the runtime reflects (the manifest is parsed by hand, the decoder is a switch over the schema model), so
+          it needs no reachability metadata.
+        -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.6</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals><goal>compile-no-fork</goal></goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>intrabuf</imageName>
+                            <mainClass>${app.mainClass}</mainClass>
+                            <buildArgs>
+                                <buildArg>-O2</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>-H:TempDirectory=${project.build.directory}/svm-tmp</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
