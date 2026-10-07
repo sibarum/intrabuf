@@ -137,6 +137,49 @@ class CliTest {
     }
 
     @Test
+    void convertsToTextAndReadsText() throws IOException {
+        Path binary = dir.resolve("customer.ib");
+        Files.write(binary, CustomerIntrabuf.toBytes(WriteSamples.customer()));
+        Result t = run(new byte[0], "text", "-m", exampleManifests(), binary.toString());
+        assertEquals(0, t.code(), t.err());
+        // The manifest-driven writer produces exactly what the generated codec does.
+        assertEquals(CustomerIntrabuf.toText(WriteSamples.customer()), t.out().replace(System.lineSeparator(), "\n"));
+
+        Path text = dir.resolve("customer.txt");
+        Files.writeString(text, t.out());
+        Result d = run(new byte[0], "decode", "-m", exampleManifests(), text.toString());
+        assertEquals(0, d.code(), d.err());
+        assertTrue(d.out().contains("bytes of text"), d.out());
+        assertTrue(d.out().contains("name: \"Ada Lovelace\""), d.out());
+        assertEquals(WriteSamples.customer(), CustomerIntrabuf.fromBytes(Files.readAllBytes(text)));
+
+        Result h = run(new byte[0], "header", text.toString());
+        assertEquals(0, h.code(), h.err());
+        assertTrue(h.out().contains("schema    example.Customer"), h.out());
+        assertTrue(h.out().contains("version   1.2 BACKWARD"), h.out());
+
+        // Text in, text out.
+        Result again = run(Files.readAllBytes(text), "text", "-m", exampleManifests(), "-");
+        assertEquals(t.out(), again.out());
+    }
+
+    @Test
+    void convertsApplicationFramesToText() {
+        var codec = sibarum.intrabuf.tests.HeaderSchemas_PongIntrabuf.CODEC;
+        var env = sibarum.intrabuf.tests.HeaderSchemas_EnvelopeIntrabuf.create(codec.schema(), (short) 1, (byte) 2, false, true, 555L);
+        var pong = new sibarum.intrabuf.tests.HeaderSchemas.Pong(7, "framed\ntwice");
+        sibarum.intrabuf.IbWriter w = new sibarum.intrabuf.IbWriter();
+        sibarum.intrabuf.tests.HeaderSchemas_EnvelopeIntrabuf.CODEC.write(w, env);
+        codec.encodeBody(pong, w);
+        String tests = location("META-INF/intrabuf/intrabuf-tests.json").toString();
+        Result r = run(new byte[0], "text", "-m", tests, "-m", exampleManifests(), "--header", "test.Envelope", "--hex",
+                HexFormat.of().formatHex(w.toByteArray()));
+        assertEquals(0, r.code(), r.err());
+        assertEquals(sibarum.intrabuf.tests.HeaderSchemas_EnvelopeIntrabuf.CODEC.encodeText(env, codec, pong),
+                r.out().replace(System.lineSeparator(), "\n"));
+    }
+
+    @Test
     void usageErrorsExitWith2() {
         assertEquals(2, run(new byte[0]).code());
         assertEquals(2, run(new byte[0], "frobnicate").code());

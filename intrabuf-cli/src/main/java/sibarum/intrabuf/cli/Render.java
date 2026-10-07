@@ -1,16 +1,25 @@
 package sibarum.intrabuf.cli;
 
+import sibarum.intrabuf.IntrabufException;
+import sibarum.intrabuf.TextWriter;
 import sibarum.intrabuf.dynamic.DynValue.DynEnum;
 import sibarum.intrabuf.dynamic.DynValue.DynField;
 import sibarum.intrabuf.dynamic.DynValue.DynList;
 import sibarum.intrabuf.dynamic.DynValue.DynMap;
 import sibarum.intrabuf.dynamic.DynValue.DynMessage;
+import sibarum.intrabuf.dynamic.DynamicDecoder;
+import sibarum.intrabuf.dynamic.SchemaSet;
+import sibarum.intrabuf.schema.HeaderDef;
 import sibarum.intrabuf.schema.Json;
+import sibarum.intrabuf.schema.MessageDef;
 
+import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Renders decoded values as an indented tree for people, or as JSON for tools. */
 final class Render {
@@ -139,6 +148,94 @@ final class Render {
 
     private static StringBuilder pad(StringBuilder sb, int indent) {
         return sb.repeat("  ", indent);
+    }
+
+    // ---- the text format ---------------------------------------------------------------------------------------
+
+    /**
+     * A decoded payload in the text format. Each message's columns are the fields it was decoded with, which are the
+     * fields of the minor it was written at. Refuses a payload with fields no loaded schema describes, since its text
+     * could not say what they hold.
+     */
+    static String text(DynamicDecoder.Decoded d, SchemaSet set, HeaderDef format) {
+        if (d.trailingBytes() > 0 || d.header().minor() > d.schema().minor()) {
+            throw unknown(d.schema().name());
+        }
+        TextWriter t = new TextWriter(d.schema().name(), d.header());
+        if (format != null) {
+            List<DynField> own = d.frame().fields().stream().filter(f -> !format.roles().containsKey(f.name())).toList();
+            if (!own.isEmpty()) {
+                t.header(format.name(), own.stream().map(DynField::name).toList(), () -> cells(t, own, set));
+            }
+        }
+        t.root(names(d.value()), () -> cells(t, d.value().fields(), set));
+        return t.finish();
+    }
+
+    private static List<String> names(DynMessage m) {
+        return m.fields().stream().map(DynField::name).toList();
+    }
+
+    private static void cells(TextWriter t, List<DynField> fields, SchemaSet set) {
+        for (DynField f : fields) {
+            text(t, f.value(), set);
+        }
+    }
+
+    private static void text(TextWriter t, Object v, SchemaSet set) {
+        switch (v) {
+            case null -> t.writeNull();
+            case Optional<?> o -> text(t, o.orElse(null), set);
+            case DynMessage m -> {
+                MessageDef def = set.latest(m.type());
+                if (m.unknownBytes() > 0 || m.minor() > def.minor()) {
+                    throw unknown(m.type());
+                }
+                TextWriter.Section s = new TextWriter.Section(m.type(), def.major(), m.minor() >= 0 ? m.minor() : def.minor(),
+                        names(m));
+                t.writeMessage(s, () -> cells(t, m.fields(), set));
+            }
+            case DynList l -> {
+                t.beginList();
+                for (Object e : l.elements()) {
+                    text(t, e, set);
+                }
+                t.endList();
+            }
+            case DynMap m -> {
+                t.beginMap();
+                for (Map.Entry<Object, Object> e : m.entries()) {
+                    text(t, e.getKey(), set);
+                    text(t, e.getValue(), set);
+                }
+                t.endMap();
+            }
+            case DynEnum e -> {
+                if (e.name() == null) {
+                    throw new IntrabufException("ordinal " + e.ordinal() + " is not a known constant of " + e.type()
+                            + "; the text format names constants");
+                }
+                t.writeEnum(e.name());
+            }
+            case Boolean b -> t.writeBool(b);
+            case Byte b -> t.writeInt8(b);
+            case Short s -> t.writeInt16(s);
+            case Integer i -> t.writeInt32(i);
+            case Long l -> t.writeInt64(l);
+            case Float f -> t.writeFloat32(f);
+            case Double x -> t.writeFloat64(x);
+            case Character c -> t.writeChar(c);
+            case String s -> t.writeString(s);
+            case byte[] b -> t.writeBytes(b);
+            case UUID u -> t.writeUuid(u);
+            case Instant i -> t.writeInstant(i);
+            default -> throw new IllegalStateException("no text form for " + v.getClass());
+        }
+    }
+
+    private static IntrabufException unknown(String type) {
+        return new IntrabufException(type + " has fields from a newer minor that no loaded manifest describes;"
+                + " load a newer manifest to convert it to text");
     }
 
     // ---- json --------------------------------------------------------------------------------------------------

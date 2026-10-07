@@ -1,6 +1,8 @@
 package sibarum.intrabuf.cli;
 
+import sibarum.intrabuf.Format;
 import sibarum.intrabuf.Header;
+import sibarum.intrabuf.TextDocument;
 import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.Hex;
 import sibarum.intrabuf.IntrabufException;
@@ -39,6 +41,9 @@ public final class IntrabufCli {
             commands:
               decode  -m <manifest>... [--header <name>] [--json] [--hex|--base64] <payload>
                       Print a payload's header and contents.
+              text    -m <manifest>... [--header <name>] [--hex|--base64] <payload>
+                      Print a payload in the text format, which every codec also reads: a starting
+                      point for writing one by hand.
               header  [-m <manifest>... --header <name>] [--json] [--hex|--base64] <payload>
                       Print a payload's header; needs no manifest for the built-in header.
               schemas -m <manifest>...
@@ -46,7 +51,8 @@ public final class IntrabufCli {
               schema  -m <manifest>... <name>
                       Show every loaded version of one schema (or a header format), field by field.
 
-            <payload> is a file, or '-' for stdin. With --hex or --base64 it is the payload itself, as text.
+            <payload> is a file, or '-' for stdin, in either format (binary, or text starting '#intrabuf').
+            With --hex or --base64 it is a binary payload itself, as text.
 
             --header <name>         The payload starts with an application header (@IntrabufHeader) rather than
                                     intrabuf's built-in one: a frame as the application writes it.
@@ -94,6 +100,7 @@ public final class IntrabufCli {
             Options o = parse(args);
             return switch (args[0]) {
                 case "decode" -> decode(o);
+                case "text" -> text(o);
                 case "header" -> header(o);
                 case "schemas" -> schemas(o);
                 case "schema" -> schema(o);
@@ -233,8 +240,13 @@ public final class IntrabufCli {
     }
 
     private void printHeader(Header h, byte[] payload) {
-        out.println("payload   " + payload.length + " bytes: header " + h.size() + ", body " + (payload.length - h.size()));
-        out.println("header    " + Hex.bytes(payload, 0, h.size()));
+        if (Format.of(payload) == Format.TEXT) {
+            out.println("payload   " + payload.length + " bytes of text");
+            out.println("schema    " + TextDocument.parse(payload, 0, payload.length).schemaName());
+        } else {
+            out.println("payload   " + payload.length + " bytes: header " + h.size() + ", body " + (payload.length - h.size()));
+            out.println("header    " + Hex.bytes(payload, 0, h.size()));
+        }
         out.println("schema id " + Hex.int32(h.schemaId()));
         out.println("version   " + h.version() + " " + h.compat());
         out.println("build     " + (h.snapshot() ? "SNAPSHOT (development build)" : "release"));
@@ -273,7 +285,8 @@ public final class IntrabufCli {
         out.println("# " + s.name() + " v" + h.version() + " " + h.compat()
                 + (h.snapshot() ? " from a SNAPSHOT build" : "")
                 + (h.hasFingerprint() ? ", fingerprint " + Hex.int32(h.fingerprint()) : "")
-                + "; " + payload.length + " bytes (header " + h.size() + ")");
+                + "; " + payload.length + (Format.of(payload) == Format.TEXT ? " bytes of text"
+                : " bytes (header " + h.size() + ")"));
         out.println("# decoded with " + s.javaType() + " v" + s.version() + " from build " + s.buildVersion()
                 + (h.hasFingerprint() && h.fingerprint() == s.fingerprint() ? " (fingerprint matches)" : ""));
         for (String w : d.warnings()) {
@@ -283,6 +296,14 @@ public final class IntrabufCli {
             out.println("# frame: " + Render.tree(d.frame()).replace("\n", "\n# "));
         }
         out.println(Render.tree(d.value()));
+        return 0;
+    }
+
+    private int text(Options o) throws IOException, UsageException {
+        SchemaSet set = schemaSet(o);
+        HeaderDef format = headerFormat(o, set);
+        DynamicDecoder.Decoded d = new DynamicDecoder(set).decode(payload(o), format);
+        out.print(Render.text(d, set, format));
         return 0;
     }
 

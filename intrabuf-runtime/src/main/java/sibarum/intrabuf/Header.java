@@ -50,6 +50,16 @@ public record Header(int wireVersion, boolean snapshot, Compat compat, int schem
         }
 
         @Override
+        protected void writeText(TextWriter t, Header h) {
+            // The first line of the document is the whole header.
+        }
+
+        @Override
+        protected Header readText(TextReader t) {
+            return t.facts();
+        }
+
+        @Override
         public Header facts(Header h, int size) {
             return h.size() == size ? h : new Header(h.wireVersion, h.snapshot, h.compat, h.schemaId, h.major, h.minor,
                     h.hasFingerprint, h.fingerprint, size);
@@ -119,8 +129,15 @@ public record Header(int wireVersion, boolean snapshot, Compat compat, int schem
                 r.position() - at);
     }
 
-    /** Reads just the built-in header of a payload, e.g. to route it to the right codec. */
+    /**
+     * Reads just the header of a payload with the built-in header, e.g. to route it to the right codec. A text
+     * payload's facts come from its first line; their size is -1.
+     */
     public static Header peek(byte[] payload) {
+        if (TextDocument.isText(payload, 0, payload.length)) {
+            TextDocument d = TextDocument.parse(payload, 0, payload.length);
+            return d.facts(sibarum.intrabuf.schema.Fingerprint.schemaId(d.schemaName()));
+        }
         return read(new IbReader(payload));
     }
 

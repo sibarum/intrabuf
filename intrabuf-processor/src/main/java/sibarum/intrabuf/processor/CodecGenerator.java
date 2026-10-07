@@ -33,6 +33,8 @@ final class CodecGenerator {
     private final StringBuilder sb = new StringBuilder();
     private int indent;
     private int tmp;
+    /** Whether the value emitters target the text format ({@code t}) rather than the binary one ({@code w}/{@code r}). */
+    private boolean text;
 
     CodecGenerator(MessageModel m, int fingerprint, boolean snapshot, String buildVersion) {
         this.m = m;
@@ -91,18 +93,34 @@ final class CodecGenerator {
             line("private static final " + e.getKey() + "[] " + e.getValue() + " = " + e.getKey() + ".values();");
         }
         line("");
+        StringBuilder names = new StringBuilder();
+        StringBuilder since = new StringBuilder();
+        for (FieldModel f : m.fields()) {
+            names.append(names.isEmpty() ? "" : ", ").append(quote(f.name()));
+            since.append(since.isEmpty() ? "" : ", ").append(f.since());
+        }
         line("private " + m.codecSimpleName() + "() {");
-        line("    super(SCHEMA);");
+        line("    super(SCHEMA, new String[]{" + names + "}, new int[]{" + since + "});");
         line("}");
         line("");
-        line("/** Encodes a complete payload. Same as {@code CODEC.encode(value)}. */");
+        line("/** Encodes a complete binary payload. Same as {@code CODEC.encode(value)}. */");
         line("public static byte[] toBytes(" + m.javaName() + " value) {");
         line("    return CODEC.encode(value);");
         line("}");
         line("");
-        line("/** Decodes a complete payload. Same as {@code CODEC.decode(payload)}. */");
+        line("/** Decodes a complete payload, binary or text. Same as {@code CODEC.decode(payload)}. */");
         line("public static " + m.javaName() + " fromBytes(byte[] payload) {");
         line("    return CODEC.decode(payload);");
+        line("}");
+        line("");
+        line("/** Encodes a complete payload in the text format. Same as {@code CODEC.encodeText(value)}. */");
+        line("public static String toText(" + m.javaName() + " value) {");
+        line("    return CODEC.encodeText(value);");
+        line("}");
+        line("");
+        line("/** Decodes a complete payload in the text format. Same as {@code CODEC.decodeText(text)}. */");
+        line("public static " + m.javaName() + " fromText(String text) {");
+        line("    return CODEC.decodeText(text);");
         line("}");
         sb.append(methods);
         indent--;
@@ -116,6 +134,16 @@ final class CodecGenerator {
         writeBody();
         line("");
         readBody();
+        text = true;
+        line("");
+        writeText();
+        line("");
+        if (m.header()) {
+            readHeaderText();
+        } else {
+            readText();
+        }
+        text = false;
         return sb.toString();
     }
 
@@ -140,7 +168,14 @@ final class CodecGenerator {
             line("private static final " + e.getKey() + "[] " + e.getValue() + " = " + e.getKey() + ".values();");
         }
         line("");
+        StringBuilder appColumns = new StringBuilder();
+        for (FieldModel f : m.fields()) {
+            if (!m.roles().containsKey(f.name())) {
+                appColumns.append(appColumns.isEmpty() ? "" : ", ").append(quote(f.name()));
+            }
+        }
         line("private " + m.codecSimpleName() + "() {");
+        line("    super(NAME, new String[]{" + appColumns + "});");
         line("}");
         line("");
 
@@ -290,17 +325,19 @@ final class CodecGenerator {
 
     /** Writes the non-null value held in the variable {@code x}. */
     private void emitWrite(JType t, String x, String path) {
+        String w = text ? "t" : "w";
         switch (t.ref()) {
-            case TypeRef.Scalar s -> line("w.write" + s.kind().methodSuffix() + "(" + x + ");");
-            case TypeRef.EnumRef e -> line("w.writeEnum(" + x + ");");
-            case TypeRef.MessageRef msg -> line(t.className() + ".CODEC.writeNested(w, " + x + ");");
+            case TypeRef.Scalar s -> line(w + ".write" + s.kind().methodSuffix() + "(" + x + ");");
+            case TypeRef.EnumRef e -> line(w + ".writeEnum(" + x + ");");
+            case TypeRef.MessageRef msg -> line(t.className() + ".CODEC." + (text ? "writeTextNested" : "writeNested")
+                    + "(" + w + ", " + x + ");");
             case TypeRef.ListOf l -> writeCollection(t, x, path);
             case TypeRef.SetOf s -> writeCollection(t, x, path);
             case TypeRef.MapOf mp -> {
                 int n = tmp++;
                 JType k = t.arg(0);
                 JType v = t.arg(1);
-                line("w.writeVarint(" + x + ".size());");
+                line(text ? "t.beginMap();" : "w.writeVarint(" + x + ".size());");
                 line("for (java.util.Map.Entry<" + k.javaName() + ", " + v.javaName() + "> e$" + n + " : " + x + ".entrySet()) {");
                 indent++;
                 line(k.javaName() + " k$" + n + " = e$" + n + ".getKey();");
@@ -310,6 +347,9 @@ final class CodecGenerator {
                 emitWrite(v, "v$" + n, path);
                 indent--;
                 line("}");
+                if (text) {
+                    line("t.endMap();");
+                }
             }
             case TypeRef.OptionalOf o -> throw new IllegalStateException("nested optional");
         }
@@ -318,13 +358,151 @@ final class CodecGenerator {
     private void writeCollection(JType t, String x, String path) {
         int n = tmp++;
         JType e = t.arg(0);
-        line("w.writeVarint(" + x + ".size());");
+        line(text ? "t.beginList();" : "w.writeVarint(" + x + ".size());");
         line("for (" + e.javaName() + " e$" + n + " : " + x + ") {");
         indent++;
         line("if (e$" + n + " == null) throw " + RT + "IntrabufException.nullElement(" + quote(path) + ");");
         emitWrite(e, "e$" + n, path);
         indent--;
         line("}");
+        if (text) {
+            line("t.endList();");
+        }
+    }
+
+    // ---- the text format ---------------------------------------------------------------------------------------
+
+    /** Whether field {@code f} is a cell of the text row: every field of a message; a header's own components. */
+    private boolean textCell(FieldModel f) {
+        return !m.roles().containsKey(f.name());
+    }
+
+    private void writeText() {
+        line("@Override");
+        line("protected void writeText(" + RT + "TextWriter t, " + m.javaName() + " v) {");
+        indent++;
+        for (FieldModel f : m.fields()) {
+            if (!textCell(f)) {
+                continue;
+            }
+            line(f.type().javaName() + " " + local(f) + " = v." + f.accessor() + "();");
+            if (f.nonNullDeclared()) {
+                line("if (" + local(f) + " == null) throw " + RT + "IntrabufException.nullField(" + quote(path(f)) + ");");
+            }
+        }
+        for (FieldModel f : m.fields()) {
+            if (!textCell(f)) {
+                continue;
+            }
+            String x = local(f);
+            if (f.type().ref() instanceof TypeRef.OptionalOf) {
+                JType inner = f.type().arg(0);
+                line("if (" + x + " != null && " + x + ".isPresent()) {");
+                indent++;
+                String o = "o$" + (tmp++);
+                line(inner.javaName() + " " + o + " = " + x + ".get();");
+                emitWrite(inner, o, path(f));
+                indent--;
+                line("} else {");
+                line("    t.writeNull();");
+                line("}");
+            } else if (f.nullable()) {
+                line("if (" + x + " == null) {");
+                line("    t.writeNull();");
+                line("} else {");
+                indent++;
+                emitWrite(f.type(), x, path(f));
+                indent--;
+                line("}");
+            } else {
+                emitWrite(f.type(), x, path(f));
+            }
+        }
+        indent--;
+        line("}");
+    }
+
+    private void readText() {
+        line("@Override");
+        line("protected " + m.javaName() + " readText(" + RT + "TextReader t, int minor) {");
+        indent++;
+        for (FieldModel f : m.fields()) {
+            readTextField(f, m.compat() != Compat.STRICT && f.since() > 0);
+        }
+        returnRecord();
+        indent--;
+        line("}");
+    }
+
+    /** A header's own components come from its row; its roles from the document's first line. */
+    private void readHeaderText() {
+        line("@Override");
+        line("protected " + m.javaName() + " readText(" + RT + "TextReader t) {");
+        indent++;
+        line(RT + "Header f$ = t.facts();");
+        for (FieldModel f : m.fields()) {
+            HeaderRole role = m.roles().get(f.name());
+            if (role == null) {
+                readTextField(f, false);
+            } else {
+                line(f.type().javaName() + " " + local(f) + " = " + factValue(role, f) + ";");
+            }
+        }
+        returnRecord();
+        indent--;
+        line("}");
+    }
+
+    private void readTextField(FieldModel f, boolean guarded) {
+        String x = local(f);
+        boolean optional = f.type().ref() instanceof TypeRef.OptionalOf;
+        if (!guarded && !optional && !f.nullable()) {
+            readInto(f.type(), x);
+            return;
+        }
+        line(f.type().javaName() + " " + x + " = " + defaultValue(f) + ";");
+        if (guarded) {
+            line("if (minor >= " + f.since() + ") {");
+            indent++;
+        }
+        if (optional) {
+            line("if (!t.readNull()) {");
+            indent++;
+            String o = readInto(f.type().arg(0), "o$" + (tmp++));
+            line(x + " = java.util.Optional.of(" + o + ");");
+            indent--;
+            line("}");
+        } else if (f.nullable()) {
+            line("if (!t.readNull()) {");
+            indent++;
+            emitRead(f.type(), x);
+            indent--;
+            line("}");
+        } else {
+            emitRead(f.type(), x);
+        }
+        if (guarded) {
+            indent--;
+            line("}");
+        }
+    }
+
+    /** A role component's value, from the facts {@code f$} on a text document's first line. */
+    private static String factValue(HeaderRole role, FieldModel f) {
+        String j = f.type().javaName();
+        return switch (role) {
+            case FINGERPRINT -> j.equals("int") ? "f$.fingerprint()"
+                    : "f$.hasFingerprint() ? java.lang.Integer.valueOf(f$.fingerprint()) : null";
+            default -> roleValue(role, f);
+        };
+    }
+
+    private void returnRecord() {
+        StringBuilder args = new StringBuilder();
+        for (FieldModel f : m.fields()) {
+            args.append(args.isEmpty() ? "" : ", ").append(local(f));
+        }
+        line("return new " + m.javaName() + "(" + args + ");");
     }
 
     // ---- reading -----------------------------------------------------------------------------------------------
@@ -419,13 +597,15 @@ final class CodecGenerator {
 
     /** An expression reading a value of {@code t}, or null if it needs statements (collections). */
     private String readExpr(JType t) {
+        String r = text ? "t" : "r";
         return switch (t.ref()) {
-            case TypeRef.Scalar s -> "r.read" + s.kind().methodSuffix() + "()";
+            case TypeRef.Scalar s -> r + ".read" + s.kind().methodSuffix() + "()";
             case TypeRef.EnumRef e -> {
                 String table = enumFields.computeIfAbsent(t.className(), k -> "ENUM$" + enumFields.size());
-                yield table + "[r.readEnum(" + table + ".length, " + quote(e.name()) + ")]";
+                yield text ? "t.readEnum(" + table + ", " + quote(e.name()) + ")"
+                        : table + "[r.readEnum(" + table + ".length, " + quote(e.name()) + ")]";
             }
-            case TypeRef.MessageRef msg -> t.className() + ".CODEC.readNested(r)";
+            case TypeRef.MessageRef msg -> t.className() + ".CODEC." + (text ? "readTextNested" : "readNested") + "(" + r + ")";
             default -> null;
         };
     }
@@ -442,14 +622,17 @@ final class CodecGenerator {
         String coll = "c$" + n;
         line("{");
         indent++;
-        line("int " + count + " = r.readCount();");
+        boolean isMap = t.ref() instanceof TypeRef.MapOf;
+        // A text list's count is of elements already parsed, so it needs no capacity cap.
+        String capacity = text ? count : "r.capacityHint(" + count + ")";
+        line("int " + count + " = " + (text ? isMap ? "t.beginMap()" : "t.beginList()" : "r.readCount()") + ";");
         switch (t.ref()) {
             case TypeRef.ListOf l -> line("java.util.ArrayList<" + t.arg(0).javaName() + "> " + coll
-                    + " = new java.util.ArrayList<>(r.capacityHint(" + count + "));");
+                    + " = new java.util.ArrayList<>(" + capacity + ");");
             case TypeRef.SetOf s -> line("java.util.LinkedHashSet<" + t.arg(0).javaName() + "> " + coll
-                    + " = java.util.LinkedHashSet.newLinkedHashSet(r.capacityHint(" + count + "));");
+                    + " = java.util.LinkedHashSet.newLinkedHashSet(" + capacity + ");");
             case TypeRef.MapOf mp -> line("java.util.LinkedHashMap<" + t.arg(0).javaName() + ", " + t.arg(1).javaName() + "> "
-                    + coll + " = java.util.LinkedHashMap.newLinkedHashMap(r.capacityHint(" + count + "));");
+                    + coll + " = java.util.LinkedHashMap.newLinkedHashMap(" + capacity + ");");
             default -> throw new IllegalStateException(t.ref().toString());
         }
         line("for (int i$" + n + " = 0; i$" + n + " < " + count + "; i$" + n + "++) {");
@@ -463,6 +646,9 @@ final class CodecGenerator {
         }
         indent--;
         line("}");
+        if (text) {
+            line(isMap ? "t.endMap();" : "t.endList();");
+        }
         line(target + " = " + coll + ";");
         indent--;
         line("}");

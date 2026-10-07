@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Writes one payload per example schema into a directory, for trying the CLI: {@code WriteSamples [dir]}. */
+/** Writes sample payloads, binary and text, into a directory, for trying the CLI: {@code WriteSamples [dir]}. */
 public final class WriteSamples {
 
     private WriteSamples() {
@@ -32,6 +32,9 @@ public final class WriteSamples {
         Files.write(dir.resolve("customer.ib"), CustomerIntrabuf.toBytes(customer()));
         Files.write(dir.resolve("reading.ib"), SensorReadingIntrabuf.toBytes(reading()));
         Files.write(dir.resolve("address.ib"), AddressIntrabuf.toBytes(customer().home()));
+        // The same payloads in the text format, which the same codecs (and the CLI) read.
+        Files.writeString(dir.resolve("customer.txt"), CustomerIntrabuf.toText(customer()));
+        Files.writeString(dir.resolve("reading.txt"), SensorReadingIntrabuf.toText(reading()));
         System.out.println("wrote samples to " + dir.toAbsolutePath());
     }
 }

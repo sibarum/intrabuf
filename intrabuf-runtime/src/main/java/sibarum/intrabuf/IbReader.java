@@ -97,6 +97,18 @@ public final class IbReader {
         return n <= limit - pos && Arrays.equals(buf, pos, pos + n, prefix, 0, n);
     }
 
+    /** Whether the unread bytes are a payload in the text format. */
+    public boolean isText() {
+        return TextDocument.isText(buf, pos, limit - pos);
+    }
+
+    /** Parses the unread bytes as a text payload, consuming them all. */
+    public TextDocument readText() {
+        TextDocument d = TextDocument.parse(buf, pos, limit - pos);
+        pos = limit;
+        return d;
+    }
+
     public byte readByte() {
         need(1);
         return buf[pos++];

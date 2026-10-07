@@ -24,6 +24,9 @@ byte[] payload = CustomerIntrabuf.toBytes(customer);
 Customer back  = CustomerIntrabuf.fromBytes(payload);
 ```
 
+Every codec also speaks a human-readable [text format](#readable-the-text-format), and `fromBytes` accepts either
+format, so any message can go over the wire as text when a person needs to read or write it.
+
 ## Modules
 
 | module               | what it is                                                                                      |
@@ -114,9 +117,9 @@ public record Envelope(
 EnvelopeIntrabuf.CODEC.write(w, EnvelopeIntrabuf.create(PingIntrabuf.SCHEMA, magic, request, correlationId));
 PingIntrabuf.CODEC.encodeBody(ping, w);
 
-// read: route on the facts, then decode; the compatibility checks run exactly as with the built-in header
+// read, either format: route on the facts, then decode; the compatibility checks run exactly as with the built-in header
 HeaderCodec.Frame<Envelope> f = EnvelopeIntrabuf.CODEC.readFrame(r);
-Object msg = registry.get(f.facts().schemaId()).decodeBody(f.facts(), r);
+Object msg = registry.get(f.facts().schemaId()).decodeBody(f, r);
 ```
 
 `create` fills the role components from a message's schema and takes the application's components as arguments.
@@ -146,7 +149,7 @@ Fields are positional, which is why payloads are small: no tags, no field names 
 ## Fast: what gets generated
 
 For `com.acme.Customer` the processor writes `com.acme.CustomerIntrabuf`: a singleton `CODEC`, `toBytes`/`fromBytes`,
-and compile-time constants (`ID`, `MAJOR`, `MINOR`, `FINGERPRINT`, `SNAPSHOT`, `BUILD_VERSION`). Its body methods are
+`toText`/`fromText`, and compile-time constants (`ID`, `MAJOR`, `MINOR`, `FINGERPRINT`, `SNAPSHOT`, `BUILD_VERSION`). Its body methods are
 one local per field, a bitset built from constant masks (null flags and booleans packed together), then one
 `IbWriter`/`IbReader` call per value. A decode whose header matches the codec's byte for byte skips the
 compatibility checks entirely.
@@ -200,6 +203,7 @@ example.Customer @minor 2 {
 ```
 
 * `decode -m <manifest>... [--json] [--hex|--base64] <payload|->`: header plus contents, as a tree or as JSON.
+* `text -m <manifest>... <payload|->`: the payload in the text format, a starting point for writing one by hand.
 * `header <payload>`: the header alone. No manifest needed for the built-in header.
 * `--header <name>` (on `decode` and `header`): the payload is a frame with an application header.
 * `schemas -m ...` and `schema -m ... <name>`: what the manifests describe, header formats included.
@@ -210,6 +214,37 @@ load several releases' manifests and the CLI will pick the version each payload 
 runtime for tools that want it, and the tests hold it to agreeing with the generated codecs.
 
 The byte-level format is specified in [docs/wire-format.md](docs/wire-format.md).
+
+## Readable: the text format
+
+Every codec writes and reads a second format, meant for people. `decode`/`fromBytes` tells the two apart by their
+first bytes, so a peer can send any one message as text (to debug a conversation, or because someone wrote it by
+hand) and the receiver needs no switch, flag or second code path:
+
+```java
+String text = CustomerIntrabuf.toText(customer);          // or CODEC.encode(customer, Format.TEXT) for bytes
+Customer c  = CustomerIntrabuf.fromBytes(textOrBinary);   // either format
+```
+
+```
+#intrabuf 1 example.Customer 1.2 BACKWARD id=0x313ffe3a fp=0xe95fde79 snapshot
+id,name,email,active,favoriteColor,home,tags,nickname,loyaltyPoints
+42,Ada Lovelace,ada@example.com,true,GREEN,&1,[vip,early-adopter],Ada,{2025=1200}
+
+#message example.Address 1.1
+&,street,city,postcode,unit
+&1,12 St James's Square,London,SW1Y 4JH,
+```
+
+The first line carries the binary header's facts, and the same compatibility checks run on them. Then comes the
+root message as a CSV table: field names, then one row. Each nested message type gets a table after it, whose
+numbered rows (`&1`) cells refer to. `byte[]` values are base64 in a trailing `#blobs` section, referred to as `$1`.
+Empty cells are null. Strings that span lines go in backticks, and ones with commas or quotes in double quotes.
+Column names are checked against the schema, and every row and blob must be referred to exactly once, so a
+hand-edited payload fails with the line and the column at fault rather than decoding into the wrong field.
+Application headers work too: their own components become a `#header` table.
+
+The format is specified in [docs/text-format.md](docs/text-format.md).
 
 ## Limits and non-goals (for now)
 
