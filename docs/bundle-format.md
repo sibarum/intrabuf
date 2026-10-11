@@ -3,7 +3,8 @@
 > **Status: partly implemented.** What exists is `@IntrabufBundle` and the [text log](#text-body-the-log): a bundle written
 > and read one row at a time, whose members' messages are flat (no nested messages, no `byte[]`). Everything else
 > here is still a design proposal: the binary body, ordering profiles, hints, size limits, shared blobs, nested
-> messages in bundles, archives, [collected bundles](#collected-bundles), and bundles in the manifest and the CLI.
+> messages in bundles, archives, [collected bundles](#collected-bundles), the [streaming parser](#streaming-parser)
+> and the log's end line, and bundles in the manifest and the CLI.
 > Names, chunk tags and error codes in those parts are placeholders to argue about.
 
 A message payload holds one root message. A **bundle** holds many top-level messages of several kinds in one
@@ -241,6 +242,7 @@ frames,2026-10-11T10:00:00.016Z,401,false
   fields has rows that are just its name.
 * **There is no root table, no `#message` table and no `#blobs`**, which is why members' messages can't yet hold
   nested messages or `byte[]` values. The processor rejects a bundle whose members could.
+* **The end line**, `#end`, is proposed: see [The end of a payload](#the-end-of-a-payload). Nothing writes it yet.
 * Blank lines and comments (`#` followed by a space) may appear anywhere after the facts line. Lines end with `\n` or
   `\r\n`.
 
@@ -252,6 +254,73 @@ The writer sends each row to its output in a single `append`, newline included, 
 from several threads therefore never interleave. A reader of a live log never sees part of a row, as long as the
 output writes each append whole: a `BufferedWriter` doesn't, since it writes out what it holds when its buffer fills,
 mid-row or not (see [Open questions](#open-questions)).
+
+## Streaming parser
+
+> **Proposal.** Today's parser hands each row to the visitor as it reads it, but it reads from a `String` or bytes
+> already in memory. Nothing in this section exists yet.
+
+A bundle is the stream between two components: unbounded, not infinite. Its reader has to work while the stream is
+still arriving, in the memory of what it hasn't finished. So the parser takes its input in pieces, as the input
+arrives, and calls the visitor each time a row is complete. There is one parser, and every way of reading a bundle
+is built on it.
+
+```java
+LogParser p = TraceIntrabuf.CODEC.parser(visitor);
+p.feed(chunk, off, len);   // any amount, split anywhere; complete rows go to the visitor before feed returns
+p.feed(more, 0, n);
+Header facts = p.end();    // the input is over: checks that the payload ended cleanly
+```
+
+* **Pushed, not pulled.** The caller hands the parser whatever it has. The parser never waits for input, so it serves
+  blocking and non-blocking code alike: a socket callback, a pipe, a file read loop.
+* **No threads of its own.** The visitor runs on the thread that calls `feed`, before `feed` returns. There are no
+  futures and no queues. A slow visitor slows the feeder, which is the only backpressure there is, and the right
+  kind between trusted peers. A parser is fed by one thread at a time.
+* **A chunk may end anywhere**: inside a UTF-8 character, a quoted cell, a backtick block, the facts line, a varint.
+  The parser keeps the unfinished tail and picks up where it stopped.
+* **A complete row is a parser state, not a newline.** A backtick value may span lines, so a text row ends at the
+  newline that closes it, not at the first one.
+* **Memory is the declarations plus the unfinished row.** In the binary body, add the blobs the ordering profile
+  makes it hold. A row that never ends grows the tail, so the reader's size cap counts it, and a tail over the cap
+  fails with `TOO_LARGE`.
+* **Errors arrive where they happen.** A malformed row fails in the `feed` that completes it, naming its line, after
+  the rows before it have gone to the visitor. That is what streaming means. `fromText` and `fromBytes` still return
+  a whole bundle or throw; they never return part of one.
+
+Everything else is a loop over it:
+
+```java
+Header facts = TraceIntrabuf.CODEC.read(in, visitor);   // InputStream: feed what read() returns, then end()
+Header facts = TraceIntrabuf.CODEC.read(text, visitor); // String or bytes: one feed, then end()
+Trace trace  = TraceIntrabuf.fromText(text);            // the visitor that appends to lists
+```
+
+The binary body suits this better still. Every chunk's extent is known from its tag and the schema, so the parser
+needs no lookahead past a varint, and the [ordering profiles](#ordering-profiles) already say what it must hold.
+
+### The end of a payload
+
+Running out of input isn't the same as the payload ending. A binary bundle ends with its END chunk. A text log ends
+with an end line:
+
+```
+frames,2026-10-11T10:00:00.016Z,401,false
+#end
+```
+
+The writer writes `#end` when it is closed. Nothing may follow it but blank lines and comments.
+
+`end()` checks the payload ended: a log without `#end`, or one cut off inside a row, fails with `TRUNCATED`. That is
+what a log written by a crashed process, or one cut off in transit, looks like. A reader that wants such a log
+anyway asks for it:
+
+```java
+Header facts = p.endUnfinished();   // accepts a payload with no end; a partial last row is still an error
+```
+
+That is how a live tail, or a post-mortem of a crashed process's log, reads what it has. Logs written before the end
+line existed read only this way.
 
 ## Archives
 
@@ -297,7 +366,7 @@ String text = TraceIntrabuf.toText(trace);
 
 The visitor and the writer have one method per member, named after it. Materialising a `Trace` is the visitor that
 appends to lists. A reader takes the log as a `String` or UTF-8 bytes. The parse is streamed, but the text is in
-memory.
+memory until the [streaming parser](#streaming-parser) exists.
 
 The proposal, once there is a binary body:
 
@@ -313,11 +382,9 @@ byte[] bytes    = WorldSnapshotIntrabuf.toBytes(w);
 * **Blob ids.** Numbering in BLOB chunk order means a `NEXT_ROW` writer refers to a blob before giving it an id it
   hasn't written yet. That works, but a reader indexing blobs by id must allow for gaps until the bundle ends.
 * **Archives of binary payloads.** Should an archive be able to carry a binary payload too, or is it text only?
-* **A log's end.** The binary body ends with an END chunk; the text log has no end, so a log cut off between rows
-  (a crash, or a writer still going) reads as complete. An end line, say `#end`, would make a log self-contained the
-  way a binary bundle is. Reading one that hasn't ended, a live tail or a post-mortem, then becomes something a
-  reader asks for.
 * **Whole rows under buffering.** Should `LogWriter` buffer rows itself and hand its output only whole rows? That
   makes the live-log promise true on any output, and is likely faster than a `BufferedWriter` behind a lock.
-* **Reading an unbounded log.** A reader takes a `String` or bytes, so the whole log is in memory. A stream between
-  components needs one that reads a `Reader` or an `InputStream` as it goes.
+* **Feeding characters.** The parser takes bytes, since every payload is bytes and text is UTF-8. Should a text log
+  also be fed `char`s, for input that is already decoded (a `Reader`)?
+* **A cap on one row.** The reader's size cap bounds the whole payload. Should a streaming reader also cap a single
+  row, so a log that is fine overall but has one runaway row fails early?
