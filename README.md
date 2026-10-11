@@ -51,6 +51,7 @@ equivalence is imposed that you didn't ask for. Each invariant a schema can decl
 | your own header                    | intrabuf's facts in your frame instead of in front of it               | yes        |
 | binary or text                     | a person can read or write any message                                 | yes        |
 | bundles                            | many messages of planned kinds in one payload                          | as a text log |
+| collected bundles                  | a bundle whose members the build finds, so any library can add a kind  | proposed   |
 | ordering profiles                  | a receiver that stream-parses gets rows in the order it needs          | planned    |
 | hints                              | lengths and counts out of band, advisory or relied on                   | planned    |
 | shared blobs, size caps            | one blob for many rows; bounded memory                                 | planned    |

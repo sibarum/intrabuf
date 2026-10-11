@@ -3,8 +3,8 @@
 > **Status: partly implemented.** What exists is `@IntrabufBundle` and the [text log](#text-body-the-log): a bundle written
 > and read one row at a time, whose members' messages are flat (no nested messages, no `byte[]`). Everything else
 > here is still a design proposal: the binary body, ordering profiles, hints, size limits, shared blobs, nested
-> messages in bundles, archives, and bundles in the manifest and the CLI. Names, chunk tags and error codes in those
-> parts are placeholders to argue about.
+> messages in bundles, archives, [collected bundles](#collected-bundles), and bundles in the manifest and the CLI.
+> Names, chunk tags and error codes in those parts are placeholders to argue about.
 
 A message payload holds one root message. A **bundle** holds many top-level messages of several kinds in one
 self-contained payload, under one header. The motivating case is a keyframe, or scene re-sync: loading the whole
@@ -47,6 +47,56 @@ The bundle's schema has an id, a version, a compat mode and a fingerprint, like 
 which doesn't change: a bundle payload starts with the built-in header or an application header, exactly as a
 message payload does. Whether a schema is a bundle is a property of the schema, recorded in the manifest. The
 fingerprint covers the member list, the ordering profile and any mandated hints.
+
+## Collected bundles
+
+> **Proposal.** Nothing in this section exists yet.
+
+Some bundles can't be listed by whoever declares them. The motivating case is a trace: every layer of a stack
+reports events, the probe that writes them sits at the bottom and can name none of them, and each library adds kinds
+as it pleases. A collected bundle has its members found by the processor instead of written out. It is still planned
+ahead, by the build: the application's compilation sees every module it is made of, so it can list every kind there
+is, and the one promise (the same build reads what it wrote) is exactly what such a bundle needs.
+
+```java
+// atchung-probe, at the bottom: only the marker
+public interface ProbeEvent { }
+
+// vexelray-gui, a library: declares an event and knows nothing about any bundle
+@IntrabufMessage
+public record LoopPark(long budgetNanos) implements ProbeEvent { }
+
+// the application: the processor writes the rest
+@IntrabufBundle(collect = ProbeEvent.class)
+interface Trace { }
+```
+
+The processor collects every `@IntrabufMessage` that implements the marker, in this compilation and in the manifests
+of its dependencies, and generates:
+
+* the bundle record, `TraceBundle`, one list per member, and its codec, writer and visitor as for a declared bundle;
+* `write(ProbeEvent)` on the writer, which hands an event to its member by type. This is what lets code that knows
+  only the marker (the probe) write any member.
+
+The rules:
+
+* **Members are named by simple class name** in lower camel case: `LoopPark` is the member `loopPark`, its rows start
+  `loopPark,` and its writer method is `loopPark(LoopPark)`. Two collected messages with the same simple name are a compile error,
+  never a silent rename.
+* **The fingerprint covers the collected list.** Adding an event anywhere in the build changes it, so a reader from
+  another build notices.
+* **STRICT by default.** A generated list has no place for `since`. A FULL collected bundle is allowed when every
+  member is FULL: a reader skips the members it doesn't know, which is what yesterday's trace read by today's tools
+  wants. BACKWARD is not offered, since nothing records which minor a member arrived at.
+* **Text only, until binary tags are settled.** A text row names its member, so order doesn't matter there. The
+  binary body tags members by declaration order, and a collected order changes whenever an event is added. A binary
+  collected bundle needs tags from a hash of the name, or ids its messages assign themselves with
+  `@IntrabufMessage(id = …)`.
+* **Nothing is inferred that a message doesn't already declare.** Members are ordinary `@IntrabufMessage` records,
+  with their codecs as they are. Collecting finds them; it doesn't guess how to serialize anything.
+
+What it needs that doesn't exist: manifests recording each message's supertypes, so a dependency's messages can be
+found by marker, and the processor reading dependencies' manifests.
 
 ## What a bundle is
 
@@ -199,8 +249,9 @@ empty lists. A FULL reader of a newer log skips the rows of members it doesn't k
 knows. A declaration of a member the log's minor shouldn't have is an error.
 
 The writer sends each row to its output in a single `append`, newline included, and writing is synchronized. Rows
-from several threads therefore never interleave, and a reader of a live log never sees part of a row the writer
-finished.
+from several threads therefore never interleave. A reader of a live log never sees part of a row, as long as the
+output writes each append whole: a `BufferedWriter` doesn't, since it writes out what it holds when its buffer fills,
+mid-row or not (see [Open questions](#open-questions)).
 
 ## Archives
 
@@ -262,3 +313,11 @@ byte[] bytes    = WorldSnapshotIntrabuf.toBytes(w);
 * **Blob ids.** Numbering in BLOB chunk order means a `NEXT_ROW` writer refers to a blob before giving it an id it
   hasn't written yet. That works, but a reader indexing blobs by id must allow for gaps until the bundle ends.
 * **Archives of binary payloads.** Should an archive be able to carry a binary payload too, or is it text only?
+* **A log's end.** The binary body ends with an END chunk; the text log has no end, so a log cut off between rows
+  (a crash, or a writer still going) reads as complete. An end line, say `#end`, would make a log self-contained the
+  way a binary bundle is. Reading one that hasn't ended, a live tail or a post-mortem, then becomes something a
+  reader asks for.
+* **Whole rows under buffering.** Should `LogWriter` buffer rows itself and hand its output only whole rows? That
+  makes the live-log promise true on any output, and is likely faster than a `BufferedWriter` behind a lock.
+* **Reading an unbounded log.** A reader takes a `String` or bytes, so the whole log is in memory. A stream between
+  components needs one that reads a `Reader` or an `InputStream` as it goes.
