@@ -234,12 +234,65 @@ class BundleLogTest {
         fails(FACTS + frames + "frames,2026-10-11T10:00:00Z,400\n", "has 2 cell(s); its table has 3");
         fails(FACTS + frames + "frames,2026-10-11T10:00:00Z,many,true\n", "test.Frame.workMicros: expected an int32");
         fails(FACTS + "id\n42\n", "'id' is not a member declared above this row");
-        fails(FACTS + "#message test.Frame 1.0\n&,at\n", "a log holds only '#member' declarations and rows");
+        fails(FACTS + "#message test.Frame 1.0\n&,at\n", "a log holds only '#member' declarations, rows and '#end'");
         fails("#intrabuf 1 test.Trace 1.0 BACKWARD\n#member marks test.Mark 1.0\nmarks\n",
                 "member marks was added in minor 1, but the log is minor 0");
         IncompatiblePayloadException e = assertThrows(IncompatiblePayloadException.class,
                 () -> BundleSchemas_TraceIntrabuf.fromText(FACTS + "#member frames test.Frame 2.0\nframes,at,workMicros,idle\n"));
         assertEquals(Reason.MAJOR_MISMATCH, e.reason());
+    }
+
+    // ---- ends and version boundaries ---------------------------------------------------------------------------
+
+    /** What a newer writer might put past a boundary: nothing an older reader could parse. */
+    private static final String JUNK = "#parts 7\n\u0000garbage,,,[[[{=\n`never closed\n#member frames test.Nope 9.9\n";
+
+    @Test
+    void readerStopsAtTheEndAndReadsNothingPastIt() {
+        String log = FACTS
+                + "#member frames test.Frame 1.0\nframes,at,workMicros,idle\n"
+                + "frames,2026-10-11T10:00:00Z,400,true\n"
+                + "#end\n" + JUNK;
+        assertEquals(List.of(frame(0)), BundleSchemas_TraceIntrabuf.fromText(log).frames());
+    }
+
+    private static final String TICKS = "#member ticks test.Tick 1.0\nticks,n\nticks,1\n";
+
+    @Test
+    void readerReadsPastABoundaryAtOrBelowItsVersion() {
+        String log = "#intrabuf 1 test.Ticks 1.1 FULL\n" + TICKS
+                + "#end 1.1\n"
+                + "#member flags test.Flag 1.0\nflags,name\nflags,late\nticks,2\n";
+        assertDeepEquals(new BundleSchemas.TicksV0(List.of(new TickV0(1))), BundleSchemas_TicksV0Intrabuf.fromText(log));
+        assertDeepEquals(new Ticks(List.of(new Tick(1, null), new Tick(2, null)), List.of(new Flag("late"))),
+                BundleSchemas_TicksIntrabuf.fromText(log));
+    }
+
+    @Test
+    void olderReaderTreatsANewerBoundaryAsTheEnd() {
+        String log = "#intrabuf 1 test.Ticks 1.2 FULL\n" + TICKS + "#end 1.2\n" + JUNK;
+        assertDeepEquals(new BundleSchemas.TicksV0(List.of(new TickV0(1))), BundleSchemas_TicksV0Intrabuf.fromText(log));
+        assertDeepEquals(new Ticks(List.of(new Tick(1, null)), List.of()), BundleSchemas_TicksIntrabuf.fromText(log));
+        byte[] bytes = (log + "ÿ").getBytes(StandardCharsets.UTF_8);
+        bytes[bytes.length - 1] = (byte) 0xC3; // a UTF-8 sequence cut short
+        assertDeepEquals(new Ticks(List.of(new Tick(1, null)), List.of()), BundleSchemas_TicksIntrabuf.fromBytes(bytes));
+    }
+
+    private static void ticksFails(String log, String expected) {
+        IntrabufException e = assertThrows(IntrabufException.class, () -> BundleSchemas_TicksIntrabuf.fromText(log));
+        assertTrue(e.getMessage().contains(expected), "expected '" + expected + "' in: " + e.getMessage());
+    }
+
+    @Test
+    void malformedBoundariesFail() {
+        fails(FACTS + "#end 1.1\n", "line 2: a version boundary is only allowed in a FULL log; this one is BACKWARD");
+        String ticks12 = "#intrabuf 1 test.Ticks 1.2 FULL\n" + TICKS;
+        ticksFails(ticks12 + "#end 2.1\n", "version boundary 2.1 is not of the log's major, 1");
+        ticksFails(ticks12 + "#end 1.0\n", "a version boundary at minor 0 would be passed by every reader");
+        ticksFails(ticks12 + "#end 1.3\n", "version boundary 1.3 is newer than the log, 1.2");
+        ticksFails(ticks12 + "#end 1.1\n#end 1.1\n", "version boundary 1.1 does not rise above the one before it, 1.1");
+        ticksFails(ticks12 + "#end 1.1 now\n", "expected '#end' or '#end <major>.<minor>'");
+        ticksFails(ticks12 + "#end one\n", "version 'one' is not <major>.<minor>");
     }
 
     @Test

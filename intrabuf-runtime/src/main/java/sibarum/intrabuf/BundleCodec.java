@@ -28,6 +28,10 @@ import java.util.List;
  * other row and no blob. A writer can therefore append each row as it happens, and a reader can deliver each one as
  * it reads it.
  *
+ * <p>A log may end with {@code #end}. A FULL log may also hold version boundaries, {@code #end 1.2}: a reader at
+ * that minor or newer reads on, and any other reader stops there, at what is for it the end of the log. Nothing past
+ * an end a reader stops at is read, so whatever a newer writer put there can't fail an older reader.
+ *
  * <p>Binary bundles are not implemented yet.
  *
  * @param <B> the bundle record
@@ -201,6 +205,11 @@ public abstract class BundleCodec<B, V> {
             Object value = codec.readText(t, d[1]);
             t.endRow();
             handler.row(d[0], value);
+        }
+
+        @Override
+        public boolean readsPast(int boundaryMinor) {
+            return schema.minor() >= boundaryMinor;
         }
 
         private int indexOf(String name) {

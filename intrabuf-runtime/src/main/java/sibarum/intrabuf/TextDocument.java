@@ -42,6 +42,11 @@ public final class TextDocument {
     public static final int VERSION = 1;
     /** Declares a member of a bundle's log: {@code #member <name> <schema> <major>.<minor>}. */
     public static final String MEMBER = "#member";
+    /**
+     * Ends a bundle's log ({@code #end}), or ends it for readers older than a version ({@code #end <major>.<minor>},
+     * a version boundary). Nothing past an end a reader stops at is read.
+     */
+    public static final String END = "#end";
 
     private static final byte[] PREFIX = (MAGIC + " ").getBytes(StandardCharsets.US_ASCII);
     private static final byte[] BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
@@ -150,6 +155,12 @@ public final class TextDocument {
 
         /** A row of a declared member. */
         void row(String member, Row row);
+
+        /**
+         * A version boundary, {@code #end <major>.<minor>}, already checked against the facts line: whether this reader
+         * reads on past it. One that doesn't has reached the end of the log.
+         */
+        boolean readsPast(int minor);
     }
 
     /** Parses a bundle's log, handing each part to {@code sink} as it is read. */
@@ -313,7 +324,8 @@ public final class TextDocument {
 
     /**
      * A log: the facts line, then {@code #member} declarations and rows in any order, each row starting with the name
-     * of a member declared above it. There is no root table, and rows hold no references.
+     * of a member declared above it. There is no root table, and rows hold no references. It may end with
+     * {@code #end}, and a FULL log may hold version boundaries; past the end a reader stops at, nothing is read.
      */
     private void parseLogDocument(LogSink sink) {
         if (s.startsWith("﻿")) {
@@ -322,11 +334,42 @@ public final class TextDocument {
         parseFacts(readLine());
         sink.facts(this);
         Map<String, Table> members = new HashMap<>();
+        int boundary = 0;
         while (pos < s.length()) {
             if (skipBlankOrComment()) {
                 continue;
             }
-            if (lineStartsWith(MEMBER)) {
+            if (lineStartsWith(END)) {
+                int at = line;
+                String[] marker = tokens(readLine());
+                if (marker.length == 1) {
+                    return;
+                }
+                if (marker.length != 2) {
+                    throw error(at, "expected '" + END + "' or '" + END + " <major>.<minor>'");
+                }
+                if (compat != Compat.FULL) {
+                    throw error(at, "a version boundary is only allowed in a FULL log; this one is " + compat);
+                }
+                int[] v = version(marker[1], at);
+                if (v[0] != major) {
+                    throw error(at, "version boundary " + marker[1] + " is not of the log's major, " + major);
+                }
+                if (v[1] == 0) {
+                    throw error(at, "a version boundary at minor 0 would be passed by every reader");
+                }
+                if (v[1] > minor) {
+                    throw error(at, "version boundary " + marker[1] + " is newer than the log, " + major + "." + minor);
+                }
+                if (v[1] <= boundary) {
+                    throw error(at, "version boundary " + marker[1] + " does not rise above the one before it, "
+                            + major + "." + boundary);
+                }
+                boundary = v[1];
+                if (!sink.readsPast(v[1])) {
+                    return;
+                }
+            } else if (lineStartsWith(MEMBER)) {
                 int at = line;
                 String[] marker = tokens(readLine());
                 if (marker.length != 4) {
@@ -344,7 +387,7 @@ public final class TextDocument {
                 }
                 sink.member(name, t);
             } else if (peek() == '#') {
-                throw error(line, "a log holds only '" + MEMBER + "' declarations and rows, not '"
+                throw error(line, "a log holds only '" + MEMBER + "' declarations, rows and '" + END + "', not '"
                         + abbreviate(peekLine()) + "'");
             } else {
                 int at = line;

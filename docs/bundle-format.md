@@ -1,10 +1,12 @@
 # Intrabuf bundles
 
 > **Status: partly implemented.** What exists is `@IntrabufBundle` and the [text log](#text-body-the-log): a bundle written
-> and read one row at a time, whose members' messages are flat (no nested messages, no `byte[]`). Everything else
+> and read one row at a time, whose members' messages are flat (no nested messages, no `byte[]`), and which a reader
+> stops reading at `#end` or at a [version boundary](#version-boundaries) newer than itself. Everything else
 > here is still a design proposal: the binary body, ordering profiles, hints, size limits, shared blobs, nested
 > messages in bundles, archives, [collected bundles](#collected-bundles), the [streaming parser](#streaming-parser)
-> and the log's end line, and bundles in the manifest and the CLI.
+> and the writer's end line, the rest of [forward compatibility](#forward-compatibility) (recorded as requirements only),
+> and bundles in the manifest and the CLI.
 > Names, chunk tags and error codes in those parts are placeholders to argue about.
 
 A message payload holds one root message. A **bundle** holds many top-level messages of several kinds in one
@@ -242,13 +244,16 @@ frames,2026-10-11T10:00:00.016Z,401,false
   fields has rows that are just its name.
 * **There is no root table, no `#message` table and no `#blobs`**, which is why members' messages can't yet hold
   nested messages or `byte[]` values. The processor rejects a bundle whose members could.
-* **The end line**, `#end`, is proposed: see [The end of a payload](#the-end-of-a-payload). Nothing writes it yet.
+* **The end line**, `#end`, ends the log: a reader reads nothing past it. A FULL log may also hold
+  [version boundaries](#version-boundaries), `#end <major>.<minor>`. Readers understand both. Nothing writes either
+  yet, and a log may still end without one (see [The end of a payload](#the-end-of-a-payload)).
 * Blank lines and comments (`#` followed by a space) may appear anywhere after the facts line. Lines end with `\n` or
   `\r\n`.
 
 Evolution follows the bundle's mode. A newer BACKWARD reader reads an older log, and members the log predates are
 empty lists. A FULL reader of a newer log skips the rows of members it doesn't know, and cells past the fields it
-knows. A declaration of a member the log's minor shouldn't have is an error.
+knows. A declaration of a member the log's minor shouldn't have is an error. What else FULL will have to tolerate is
+in [Forward compatibility](#forward-compatibility).
 
 The writer sends each row to its output in a single `append`, newline included, and writing is synchronized. Rows
 from several threads therefore never interleave. A reader of a live log never sees part of a row, as long as the
@@ -309,9 +314,10 @@ frames,2026-10-11T10:00:00.016Z,401,false
 #end
 ```
 
-The writer writes `#end` when it is closed. Nothing may follow it but blank lines and comments.
+The writer writes `#end` when it is closed. A reader reads nothing past it, so whatever follows can't fail it.
 
-`end()` checks the payload ended: a log without `#end`, or one cut off inside a row, fails with `TRUNCATED`. That is
+Today's reader stops at `#end`, but doesn't yet require one, and the writer doesn't write it. The rest of this
+section is proposal. `end()` checks the payload ended: a log without `#end`, or one cut off inside a row, fails with `TRUNCATED`. That is
 what a log written by a crashed process, or one cut off in transit, looks like. A reader that wants such a log
 anyway asks for it:
 
@@ -321,6 +327,67 @@ Header facts = p.endUnfinished();   // accepts a payload with no end; a partial 
 
 That is how a live tail, or a post-mortem of a crashed process's log, reads what it has. Logs written before the end
 line existed read only this way.
+
+## Forward compatibility
+
+> **Requirements, not design.** This records what forward compatibility has to mean for a bundle, so nothing built
+> before it rules it out. What exists today is FULL's part of it: an older reader skips cells past the fields it
+> knows, and the rows of members it doesn't know. The text log's reader also understands
+> [version boundaries](#version-boundaries), though nothing writes one yet. Removed columns, unknown parts and unknown
+> blobs don't exist.
+
+Forward compatibility is an older reader reading a newer payload. It is something a schema declares, never a
+default: everything in this section applies only to a FULL bundle. In a STRICT or BACKWARD payload, a boundary or
+anything else an older reader would have to ignore is an error, exactly as it is today.
+
+A FULL bundle is read by builds that predate it, so it carries its whole history. A future version must remember
+every change ever made to the schema, and what a change looks like on the wire is chosen so that older readers can
+pass over it:
+
+* **Columns are only added, at the end.** An older reader's last field is its **column boundary**: cells past it are
+  ignored. No marker is needed, because a new column can only ever land past every column an older reader knows.
+* **A removed column isn't removed.** It keeps its place, and every row leaves its cell empty. The schema keeps the
+  field as a tombstone, so its position stays taken and the fingerprint still covers it. An older reader that still
+  has the field reads the empty cell as the field's default, so a FULL field that may one day be removed needs a
+  default, as a field added with `since` does.
+* **Unknown schema types are ignored.** A member, or a nested message's table, whose schema the reader doesn't know is
+  skipped, with every row of it.
+* **Unsupported blobs are ignored.** A blob referred to only by what the reader skipped, or one it can't make use of,
+  is passed over, not an error.
+
+### Version boundaries
+
+The rules above cover the changes that can be foreseen. A **version boundary** is the catch-all for the rest: new
+syntax, new kinds of parts, anything an older parser can't even read past. It is an end line that carries a version:
+
+```
+#intrabuf 1 app.Trace 1.3 FULL id=0x38319260
+#member frames app.Frame 1.0
+frames,at,workMicros,idle
+frames,2026-10-11T10:00:00Z,400,true
+#end 1.3
+(parts only a 1.3 reader understands)
+#end
+```
+
+A reader whose schema version is at or above the boundary's keeps parsing. Any other reader treats the boundary as
+`#end`: what it read is a complete payload, and `end()` succeeds. It reads nothing past the boundary, so what a
+newer writer put there can't fail it, however foreign.
+
+The text log's reader does this today, and checks the rules below. In a STRICT or BACKWARD log a boundary is an
+error.
+
+* **The version is the bundle schema's**, `major.minor`, not the text or wire format's. The major must be the facts
+  line's, so it is the minor that is compared.
+* **What follows a boundary is parts**: records, attachments, or kinds of part that don't exist yet. Whatever a
+  future version adds to the bundle's syntax goes after a boundary at that version, so a reader older than it stops
+  before it.
+* **Boundaries rise.** Each one's version is above the one before it, and none is above the facts line's.
+* **None is at minor 0**, since every reader would pass it.
+* **Plain `#end` is the end no reader passes.** In the binary body a boundary is a kind `0` chunk with tag
+  `minor << 2`. Minor 0 can't be a boundary, which leaves `0x00` for END.
+* **A boundary splits by position, not by kind.** An older reader sees nothing after it, including rows of members it
+  knows. A writer puts everything older readers should see before the first boundary.
 
 ## Archives
 
