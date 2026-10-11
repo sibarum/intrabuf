@@ -2,6 +2,7 @@ package sibarum.intrabuf.processor;
 
 import sibarum.intrabuf.Header;
 import sibarum.intrabuf.SchemaInfo;
+import sibarum.intrabuf.annotation.IntrabufBundle;
 import sibarum.intrabuf.annotation.IntrabufHeader;
 import sibarum.intrabuf.annotation.IntrabufMessage;
 import sibarum.intrabuf.schema.HeaderDef;
@@ -30,8 +31,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Generates a codec for every {@link IntrabufMessage} record, and a manifest of every schema the compilation can
- * write.
+ * Generates a codec for every {@link IntrabufMessage}, {@link IntrabufHeader} and {@link IntrabufBundle} record, and a
+ * manifest of every message and header schema the compilation can write.
  *
  * <p>Options ({@code -A<key>=<value>}):
  * <ul>
@@ -58,7 +59,8 @@ public final class IntrabufProcessor extends AbstractProcessor {
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
-        return Set.of(IntrabufMessage.class.getCanonicalName(), IntrabufHeader.class.getCanonicalName());
+        return Set.of(IntrabufMessage.class.getCanonicalName(), IntrabufHeader.class.getCanonicalName(),
+                IntrabufBundle.class.getCanonicalName());
     }
 
     @Override
@@ -91,7 +93,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
             return false;
         }
         List<TypeElement> records = new ArrayList<>();
-        for (Element e : round.getElementsAnnotatedWithAny(Set.of(IntrabufMessage.class, IntrabufHeader.class))) {
+        for (Element e : round.getElementsAnnotatedWithAny(Set.of(IntrabufMessage.class, IntrabufHeader.class, IntrabufBundle.class))) {
             if (e instanceof TypeElement te) {
                 records.add(te);
                 models.markLocal(te);
@@ -122,7 +124,8 @@ public final class IntrabufProcessor extends AbstractProcessor {
     }
 
     private void write(MessageModel m) {
-        String source = new CodecGenerator(m, models.fingerprint(m), snapshot, buildVersion).generate();
+        String source = m.bundle() ? new BundleGenerator(m, models.fingerprint(m), snapshot, buildVersion).generate()
+                : new CodecGenerator(m, models.fingerprint(m), snapshot, buildVersion).generate();
         try {
             JavaFileObject file = processingEnv.getFiler().createSourceFile(m.codecName(), m.element());
             try (Writer w = file.openWriter()) {
@@ -140,6 +143,9 @@ public final class IntrabufProcessor extends AbstractProcessor {
         List<MessageDef> messages = new ArrayList<>();
         List<HeaderDef> headers = new ArrayList<>();
         for (MessageModel m : models.all().values()) {
+            if (m.bundle()) {
+                continue; // not in the manifest yet: nothing reads a bundle from one
+            }
             if (!m.header()) {
                 messages.add(new MessageDef(info(m), m.defs()));
             } else if (!m.external()) {

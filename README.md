@@ -246,11 +246,51 @@ Application headers work too: their own components become a `#header` table.
 
 The format is specified in [docs/text-format.md](docs/text-format.md).
 
+## Bundles: many messages in one log
+
+A bundle holds many top-level messages of the kinds its schema lists. It's declared as a record of lists, and evolves
+like a message: members are added at the end with `since`.
+
+```java
+@IntrabufBundle(name = "app.Trace", minor = 1, compat = Compat.BACKWARD)
+public record Trace(List<Frame> frames, List<KeyPress> keys, @Field(since = 1) List<Mark> marks) {
+}
+
+TraceIntrabuf.Writer log = TraceIntrabuf.writer(out);      // writes the facts line and declarations
+log.frames(frame);                                         // then one line per row, as it happens
+log.keys(key);
+
+TraceIntrabuf.CODEC.read(text, new TraceIntrabuf.Visitor() {
+    @Override public void frames(Frame f) { ... }          // each row as it is read
+});
+Trace whole = TraceIntrabuf.fromText(text);
+```
+
+For now a bundle is written as a text log: the facts line once, each member declared once, then rows in any order,
+each standing alone, with no root and no references:
+
+```
+#intrabuf 1 app.Trace 1.1 BACKWARD id=0x38319260
+#member frames app.Frame 1.0
+frames,at,workMicros,idle
+#member keys app.KeyPress 1.1
+keys,at,key,text
+frames,2026-10-11T10:00:00Z,400,true
+keys,2026-10-11T10:00:00.003Z,A,a
+```
+
+Readers check compatibility from the facts line and each member's version from its declaration. Because rows hold
+no references, members' messages can't contain other messages or `byte[]` values yet. The processor rejects a
+bundle whose members do. Bundles are specified, along with the binary design still to come, in
+[docs/bundle-format.md](docs/bundle-format.md).
+
 ## Limits and non-goals (for now)
 
 * Records only. No polymorphism (sealed interfaces) yet.
 * Fields can't be removed within a major (positional encoding). Bump the major instead.
-* Each payload holds one root message. To stream several, slice them yourself with `decode(bytes, off, len)` or
-  length-prefix them.
+* Each binary payload holds one root message. To stream several, slice them yourself with `decode(bytes, off, len)`
+  or length-prefix them, or write a bundle as a text log.
+* Bundles are text only, their members' messages are flat, and they aren't in the manifest, so the CLI can't read
+  them yet.
 * Manifests are per compilation. IDE incremental builds that recompile only some files may write a partial
   manifest. Maven rebuilds the whole module, so its manifests are complete.

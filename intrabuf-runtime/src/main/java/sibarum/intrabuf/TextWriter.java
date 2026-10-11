@@ -44,18 +44,55 @@ public final class TextWriter {
     private boolean[] maps = new boolean[8];
     private int depth;
 
+    /** Whether this writer writes the standalone rows of a log, which can't refer to other rows or blobs. */
+    private final boolean log;
+
     /** Starts a document for a payload of schema {@code schemaName} whose header carries {@code facts}. */
     public TextWriter(String schemaName, Header facts) {
-        doc.append(TextDocument.MAGIC).append(' ').append(TextDocument.VERSION).append(' ').append(schemaName)
+        this.log = false;
+        appendFacts(doc, schemaName, facts);
+    }
+
+    private TextWriter() {
+        this.log = true;
+    }
+
+    /** A writer for the rows of a log (see {@link #logRow}). */
+    static TextWriter forLog() {
+        return new TextWriter();
+    }
+
+    /** The facts line, as the first line of every text payload carries it. */
+    static void appendFacts(StringBuilder sb, String schemaName, Header facts) {
+        sb.append(TextDocument.MAGIC).append(' ').append(TextDocument.VERSION).append(' ').append(schemaName)
                 .append(' ').append(facts.version()).append(' ').append(facts.compat())
                 .append(" id=").append(Hex.int32(facts.schemaId()));
         if (facts.hasFingerprint()) {
-            doc.append(" fp=").append(Hex.int32(facts.fingerprint()));
+            sb.append(" fp=").append(Hex.int32(facts.fingerprint()));
         }
         if (facts.snapshot()) {
-            doc.append(" snapshot");
+            sb.append(" snapshot");
         }
-        doc.append('\n');
+        sb.append('\n');
+    }
+
+    /** A log's declaration of a member: its marker line and its columns line, which starts with the member's name. */
+    static void appendMember(StringBuilder sb, String member, Section section) {
+        sb.append(TextDocument.MEMBER).append(' ').append(member).append(' ').append(section.name()).append(' ')
+                .append(section.major()).append('.').append(section.minor()).append('\n').append(member);
+        for (String c : section.columns()) {
+            sb.append(',').append(c);
+        }
+        sb.append('\n');
+    }
+
+    /** One row of a log, newline included: the member's name, then the cells {@code body} writes. */
+    String logRow(String member, Runnable body) {
+        out = new StringBuilder(64).append(member);
+        beginRow(1);
+        body.run();
+        endRow();
+        return out.toString();
     }
 
     /** Writes an application header's table: its name, its columns, and the one row {@code body} writes. */
@@ -169,6 +206,9 @@ public final class TextWriter {
      * current row is finished.
      */
     public void writeMessage(Section section, Runnable body) {
+        if (log) {
+            throw new IntrabufException("a log row stands alone; it cannot hold a nested " + section.name());
+        }
         sep();
         int ref = nextRef++;
         out.append('&').append(ref);
@@ -231,6 +271,9 @@ public final class TextWriter {
     }
 
     public void writeBytes(byte[] v) {
+        if (log) {
+            throw new IntrabufException("a log row stands alone; it cannot hold byte[] values");
+        }
         sep();
         int ref = nextBlob++;
         out.append('$').append(ref);

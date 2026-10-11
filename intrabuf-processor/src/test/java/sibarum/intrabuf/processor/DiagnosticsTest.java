@@ -162,7 +162,50 @@ class DiagnosticsTest {
         fails(h + "@IntrabufHeader record H(" + ROLES.replace("int id", "long id") + ", @Role(HeaderRole.FINGERPRINT) Integer fp) {}",
                 "@Role(SCHEMA_ID) must be int, not long");
         fails(h + "@IntrabufMessage record M(@Role(HeaderRole.MAJOR) int m) {}", "@Role is only meaningful in an @IntrabufHeader");
-        fails(h + "@IntrabufMessage @IntrabufHeader record M(int m) {}", "not both");
+        fails(h + "@IntrabufMessage @IntrabufHeader record M(int m) {}", "not several");
+    }
+
+    private static final String MEMBER = "@IntrabufMessage(name = \"t.F\", compat = Compat.BACKWARD) record F(long at) {}\n";
+
+    @Test
+    void validBundleCompilesOutsideTheManifest() {
+        Result r = compile(HEADER + MEMBER
+                + "@IntrabufBundle(compat = Compat.BACKWARD, minor = 1) record B(List<F> frames, @Field(since = 1) List<F> more) {}");
+        assertTrue(r.success(), r.diagnostics());
+        assertTrue(Files.exists(r.out().resolve("t/BIntrabuf.class")), "bundle codec compiled");
+        try {
+            String manifest = Files.readString(r.out().resolve("META-INF/intrabuf/t.json"));
+            assertTrue(manifest.contains("\"t.F\"") && !manifest.contains("\"t.B\""), manifest);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void bundleMembers() {
+        fails(MEMBER + "@IntrabufBundle record B(F frame) {}", "a bundle's members are lists of @IntrabufMessage records");
+        fails(MEMBER + "@IntrabufBundle record B(List<String> names) {}", "a bundle's members are lists of @IntrabufMessage records");
+        fails(MEMBER + "@IntrabufBundle(compat = Compat.FULL) record B(List<F> frames) {}",
+                "FULL messages may only contain FULL messages");
+        fails(MEMBER + "@IntrabufBundle(compat = Compat.BACKWARD) record B(@Field(since = 1) List<F> frames) {}",
+                "must be between 0 and the message's minor");
+        fails(MEMBER + "@IntrabufBundle @IntrabufMessage record B(List<F> frames) {}", "not several");
+    }
+
+    @Test
+    void bundleRowsStandAlone() {
+        fails(MEMBER + "@IntrabufMessage(name = \"t.H\", compat = Compat.BACKWARD) record H(F inner) {}\n"
+                + "@IntrabufBundle(compat = Compat.BACKWARD) record B(List<H> hs) {}", "H.inner holds a message (t.F)");
+        fails("@IntrabufMessage(name = \"t.P\") record P(Map<String, byte[]> blobs) {}\n"
+                + "@IntrabufBundle record B(List<P> ps) {}", "P.blobs holds byte[]");
+    }
+
+    @Test
+    void bundlesAreNotNested() {
+        fails(MEMBER + "@IntrabufBundle(name = \"t.B\", compat = Compat.BACKWARD) record B(List<F> frames) {}\n"
+                + "@IntrabufMessage record M(B b) {}", "t.B is a bundle");
+        fails(MEMBER + "@IntrabufBundle(name = \"t.B\", compat = Compat.BACKWARD) record B(List<F> frames) {}\n"
+                + "@IntrabufBundle(name = \"t.C\", compat = Compat.BACKWARD) record C(List<B> bs) {}", "t.B is a bundle");
     }
 
     @Test

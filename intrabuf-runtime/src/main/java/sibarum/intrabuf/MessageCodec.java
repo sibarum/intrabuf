@@ -184,7 +184,8 @@ public abstract class MessageCodec<T> {
         return value;
     }
 
-    private T readTextRow(TextReader t, int minor) {
+    /** Checks the row's columns against the fields {@code minor} has, then reads the row. */
+    final T readTextRow(TextReader t, int minor) {
         TextReader.checkColumns(t.row().table(), columns(minor), minor > schema.minor());
         T value = readText(t, minor);
         t.endRow();
@@ -264,8 +265,14 @@ public abstract class MessageCodec<T> {
     /** Reads a reference to a nested message's row, and decodes that row. */
     public final T readTextNested(TextReader parent) {
         TextReader t = parent.readMessage(schema.name());
-        TextDocument.Table table = t.row().table();
-        String what = "nested " + schema.name() + " (&" + t.row().ref() + ")";
+        return readTextRow(t, checkTable(t.row().table(), "nested " + schema.name() + " (&" + t.row().ref() + ")"));
+    }
+
+    /**
+     * Checks the version of a table of this message's rows by this message's own mode, as for a nested message, and
+     * returns the minor to read its rows at. {@code what} names the table in errors.
+     */
+    final int checkTable(TextDocument.Table table, String what) {
         if (table.major() != schema.major()) {
             throw new IncompatiblePayloadException(IncompatiblePayloadException.Reason.MAJOR_MISMATCH, what + " is v"
                     + table.version() + "; this reader is major " + schema.major(), schema, null);
@@ -279,7 +286,12 @@ public abstract class MessageCodec<T> {
             throw new IncompatiblePayloadException(IncompatiblePayloadException.Reason.NEWER_MINOR, what + " is v"
                     + table.version() + ", newer than this reader's v" + schema.version(), schema, null);
         }
-        return readTextRow(t, minor);
+        return minor;
+    }
+
+    /** The text table its rows go in, at this codec's version. */
+    final TextWriter.Section section() {
+        return section;
     }
 
     // ---- generated ---------------------------------------------------------------------------------------------

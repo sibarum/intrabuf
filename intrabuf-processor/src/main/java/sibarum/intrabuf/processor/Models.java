@@ -4,6 +4,7 @@ import sibarum.intrabuf.Compat;
 import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.SchemaInfo;
 import sibarum.intrabuf.annotation.Field;
+import sibarum.intrabuf.annotation.IntrabufBundle;
 import sibarum.intrabuf.annotation.IntrabufHeader;
 import sibarum.intrabuf.annotation.IntrabufMessage;
 import sibarum.intrabuf.annotation.Role;
@@ -152,18 +153,20 @@ final class Models {
         boolean ok = true;
         IntrabufMessage ann = te.getAnnotation(IntrabufMessage.class);
         IntrabufHeader headerAnn = te.getAnnotation(IntrabufHeader.class);
+        IntrabufBundle bundleAnn = te.getAnnotation(IntrabufBundle.class);
         boolean header = headerAnn != null;
-        String what = header ? "@IntrabufHeader" : "@IntrabufMessage";
+        boolean bundle = bundleAnn != null;
+        String what = header ? "@IntrabufHeader" : bundle ? "@IntrabufBundle" : "@IntrabufMessage";
         if (te.getKind() != ElementKind.RECORD) {
             error(te, what + " applies only to records; " + te.getSimpleName() + " is a " + te.getKind().toString().toLowerCase());
             return null;
         }
-        if (ann == null && !header) {
+        if (ann == null && !header && !bundle) {
             error(te, te.getQualifiedName() + " is used as a message but is not annotated @IntrabufMessage");
             return null;
         }
-        if (ann != null && header) {
-            error(te, "a record is either an @IntrabufMessage or an @IntrabufHeader, not both");
+        if ((ann != null ? 1 : 0) + (header ? 1 : 0) + (bundle ? 1 : 0) > 1) {
+            error(te, "a record is one of @IntrabufMessage, @IntrabufHeader or @IntrabufBundle, not several");
             return null;
         }
         if (!te.getTypeParameters().isEmpty()) {
@@ -185,25 +188,27 @@ final class Models {
         }
         String schemaName = header
                 ? (headerAnn.name().isEmpty() ? te.getQualifiedName().toString() : headerAnn.name())
+                : bundle ? (bundleAnn.name().isEmpty() ? te.getQualifiedName().toString() : bundleAnn.name())
                 : schemaName(te);
         if (schemaName.isBlank() || schemaName.chars().anyMatch(c -> c == '<' || c == '>' || c == ',' || Character.isWhitespace(c))) {
             error(te, "schema name '" + schemaName + "' must be non-empty and contain no whitespace, '<', '>' or ','");
             ok = false;
         }
         // A header is a fixed layout: STRICT and unversioned, because the application's protocol versions it.
-        int major = header ? 1 : ann.major();
-        int minor = header ? 0 : ann.minor();
-        Compat compat = header ? Compat.STRICT : ann.compat();
+        int major = header ? 1 : bundle ? bundleAnn.major() : ann.major();
+        int minor = header ? 0 : bundle ? bundleAnn.minor() : ann.minor();
+        Compat compat = header ? Compat.STRICT : bundle ? bundleAnn.compat() : ann.compat();
         if (major < 0 || minor < 0) {
             error(te, "major and minor must be non-negative");
             ok = false;
         }
         int id = Fingerprint.schemaId(schemaName);
-        if (!header && ann.id().length > 1) {
+        int[] ids = header ? new int[0] : bundle ? bundleAnn.id() : ann.id();
+        if (ids.length > 1) {
             error(te, "id takes one value");
             ok = false;
-        } else if (!header && ann.id().length == 1) {
-            id = ann.id()[0];
+        } else if (ids.length == 1) {
+            id = ids[0];
         }
 
         List<FieldModel> fields = new ArrayList<>();
@@ -222,6 +227,15 @@ final class Models {
             if (jt == null) {
                 ok = false;
                 continue;
+            }
+            if (bundle) {
+                if (!(jt.ref() instanceof TypeRef.ListOf l && l.element() instanceof TypeRef.MessageRef)) {
+                    error(rc, where + ": a bundle's members are lists of @IntrabufMessage records, not " + jt.javaName());
+                    ok = false;
+                    continue;
+                }
+                // A member is never null: a bundle with no rows of it has an empty list.
+                nonNullDeclared = true;
             }
             boolean primitive = rc.asType().getKind().isPrimitive();
             boolean optional = jt.ref() instanceof TypeRef.OptionalOf;
@@ -292,7 +306,7 @@ final class Models {
         String codec = codecName(te);
         recordByCodec.put(codec, te.getQualifiedName().toString());
         return new MessageModel(te, schemaName, te.getQualifiedName().toString(), codec, id, major, minor,
-                compat, fields, external, header, roles);
+                compat, fields, external, header, roles, bundle);
     }
 
     /** Whether a component's type can carry {@code role}; reports why not. */
@@ -476,6 +490,11 @@ final class Models {
             recordByCodec.put(codec, qn);
             return new JType(new TypeRef.MessageRef(schemaName(te)), qn, List.of(), codec);
         }
+        if (te.getAnnotation(IntrabufBundle.class) != null) {
+            error(where, path + ": " + qn + " is a bundle, which is always a payload of its own; it cannot be held by a"
+                    + " message or another bundle");
+            return null;
+        }
         error(where, path + ": type " + qn + " is not supported; supported are primitives and their boxes, String, byte[], "
                 + "UUID, Instant, enums, @IntrabufMessage records, and List, Set, Map and Optional of those");
         return null;
@@ -523,6 +542,9 @@ final class Models {
             for (FieldModel f : m.fields()) {
                 ok &= checkNesting(m, f, f.type());
             }
+            if (m.bundle()) {
+                ok &= checkStandalone(m);
+            }
         }
         if (!ok) {
             return false;
@@ -557,6 +579,43 @@ final class Models {
             ok &= checkNesting(m, f, a);
         }
         return ok;
+    }
+
+    /**
+     * A bundle is written as a log whose rows stand alone, so a member's message may hold no reference to another
+     * row (a nested message) or to a blob (a {@code byte[]}).
+     */
+    private boolean checkStandalone(MessageModel bundle) {
+        boolean ok = true;
+        for (FieldModel member : bundle.fields()) {
+            MessageModel m = models.get(member.type().arg(0).className());
+            if (m == null) {
+                return false; // already reported while building it
+            }
+            for (FieldModel f : m.fields()) {
+                String held = refersOut(f.type().ref());
+                if (held != null) {
+                    error(bundle.element(), bundle.element().getSimpleName() + "." + member.name() + ": "
+                            + m.javaName() + "." + f.name() + " holds " + held + ", but a bundle's rows stand alone"
+                            + " in its log, so its members' messages cannot hold messages or byte[] yet");
+                    ok = false;
+                }
+            }
+        }
+        return ok;
+    }
+
+    /** What in {@code t} a text row would have to refer to another row or a blob for, or null if nothing. */
+    private static String refersOut(TypeRef t) {
+        return switch (t) {
+            case TypeRef.MessageRef m -> "a message (" + m.name() + ")";
+            case TypeRef.Scalar s -> s.kind() == ScalarKind.BYTES ? "byte[]" : null;
+            case TypeRef.ListOf l -> refersOut(l.element());
+            case TypeRef.SetOf s -> refersOut(s.element());
+            case TypeRef.MapOf mp -> refersOut(mp.key()) != null ? refersOut(mp.key()) : refersOut(mp.value());
+            case TypeRef.OptionalOf o -> refersOut(o.value());
+            case TypeRef.EnumRef e -> null;
+        };
     }
 
     private Integer fingerprintOf(MessageModel root) {

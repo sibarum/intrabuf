@@ -9,7 +9,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Everything the processor knows about one annotated record: a message, or an application header format.
+ * Everything the processor knows about one annotated record: a message, an application header format, or a bundle.
+ * A bundle's fields are its members, each a {@code List} of a message, so the rules for fields (positions,
+ * {@code since}, nesting, fingerprints) apply to members unchanged.
  *
  * @param id       the schema id on the wire: explicit, or the hash of {@code schemaName}
  * @param external whether the record was read from a class file (another module) rather than compiled here
@@ -17,7 +19,7 @@ import java.util.Map;
  */
 record MessageModel(TypeElement element, String schemaName, String javaName, String codecName, int id, int major,
                     int minor, Compat compat, List<FieldModel> fields, boolean external, boolean header,
-                    Map<String, HeaderRole> roles) {
+                    Map<String, HeaderRole> roles, boolean bundle) {
 
     record FieldModel(String name, String accessor, JType type, boolean nullable, boolean nonNullDeclared, int since) {
         FieldDef def() {

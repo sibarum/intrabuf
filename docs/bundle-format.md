@@ -1,7 +1,10 @@
-# Intrabuf bundles (proposal)
+# Intrabuf bundles
 
-> **Status: design proposal.** Nothing here is implemented. Annotation names, chunk tags and error codes are
-> placeholders to argue about. The decisions are the point.
+> **Status: partly implemented.** What exists is `@IntrabufBundle` and the [text log](#text-body-the-log): a bundle written
+> and read one row at a time, whose members' messages are flat (no nested messages, no `byte[]`). Everything else
+> here is still a design proposal: the binary body, ordering profiles, hints, size limits, shared blobs, nested
+> messages in bundles, archives, and bundles in the manifest and the CLI. Names, chunk tags and error codes in those
+> parts are placeholders to argue about.
 
 A payload today holds one root message. A **bundle** holds many top-level messages of several kinds in one
 self-contained payload, under one header. The motivating case is a keyframe, or scene re-sync: loading the whole
@@ -151,45 +154,48 @@ every blob until the bundle ends.
 this is checked even in release builds: a bundle over either cap fails with `TOO_LARGE`, as soon as a TOTAL_LENGTH
 hint or the bytes read so far show it.
 
-## Text body
+## Text body: the log
 
-The facts line is the bundle's, unchanged. There is no root table. Rows come in **member sections**:
+In text, a bundle is a **log**. The facts line comes once, each member is declared once, and then rows follow in any
+order, each naming its member. A writer can append each row as it happens, and a reader can hand each one on as it
+reads it:
 
 ```
-#intrabuf 1 world.Snapshot 1.1 BACKWARD id=0x5a1c09e2
-
-#member players world.Player 2.0
-id,name,avatar,inventory
-1,Ada,$1,&1
-2,Bob,$1,
-
-#member tiles world.Tile 1.3
-x,y,kind
-0,0,GRASS
-0,1,WATER
-
-#member players world.Player 2.0
-id,name,avatar,inventory
-3,Cy,$2,
-
-#message world.Inventory 1.0
-&,slots
-&1,[sword,lamp]
-
-#blobs
-$1,iVBORw0KGgoAAAANSUhEUg==
-$2,R0lGODlhAQABAAAAACw=
+#intrabuf 1 app.Trace 1.1 BACKWARD id=0x38319260
+#member frames app.Frame 1.0
+frames,at,workMicros,idle
+#member keys app.KeyPress 1.1
+keys,at,key,text
+#member marks app.Mark 1.0
+marks
+frames,2026-10-11T10:00:00Z,400,true
+keys,2026-10-11T10:00:00.003Z,A,a
+marks
+frames,2026-10-11T10:00:00.016Z,401,false
 ```
 
-* `#member <name> <schema> <major>.<minor>` opens a section of the member called `<name>`, at the version its rows
-  were written at. A columns line follows, then rows. Member rows aren't numbered, because nothing refers to them.
-* A member's section may appear any number of times, so members can interleave. Each repeat restates the columns
-  line. Within a member, rows keep their order across sections.
-* `#message` tables and `#blobs` are as in a standalone payload. Row numbers and blob numbers are scoped to the
-  bundle. Nested rows are still referred to exactly once. Blobs are referred to at least once.
-* In text, `bytes` are always blob references. Writers put every member section first, then the `#message` tables,
-  then the blobs. Readers accept them in any order. Ordering profiles and hints are binary concerns, and the text
-  format has neither.
+* **The facts line** is the bundle's, and is checked exactly as for a standalone payload: schema, major, compat mode,
+  minor, fingerprint. A hand-written log may leave out `id=`.
+* **A declaration** is `#member <name> <schema> <major>.<minor>`, then a columns line that starts with the member's
+  name. The version is the one the member's rows were written at. It is checked by that message's own mode, as a
+  nested message's is (STRICT must match, BACKWARD must not be newer, FULL can be anything, the major must match), and
+  the columns are checked against the fields of that version. A member is declared at most once. Writers declare
+  every member before the first row. Readers accept a declaration anywhere above the member's first row.
+* **A row** is the member's name, then its cells, exactly as the cells of any text row (see `text-format.md`). Rows
+  aren't numbered and hold no references, so each one stands alone. Order within a member is kept. A member with no
+  fields has rows that are just its name.
+* **There is no root table, no `#message` table and no `#blobs`**, which is why members' messages can't yet hold
+  nested messages or `byte[]` values. The processor rejects a bundle whose members could.
+* Blank lines and comments (`#` followed by a space) may appear anywhere after the facts line. Lines end with `\n` or
+  `\r\n`.
+
+Evolution follows the bundle's mode. A newer BACKWARD reader reads an older log, and members the log predates are
+empty lists. A FULL reader of a newer log skips the rows of members it doesn't know, and cells past the fields it
+knows. A declaration of a member the log's minor shouldn't have is an error.
+
+The writer sends each row to its output in a single `append`, newline included, and writing is synchronized. Rows
+from several threads therefore never interleave, and a reader of a live log never sees part of a row the writer
+finished.
 
 ## Archives
 
@@ -212,26 +218,37 @@ it exists, registers the `.intrabuf` extension.
 
 ## API
 
-```java
-// whole bundle
-WorldSnapshot w = WorldSnapshotIntrabuf.fromBytes(payload);          // binary, text or archive
-byte[] bytes    = WorldSnapshotIntrabuf.toBytes(w);
+What exists, for the text log:
 
-// streaming read: each row is delivered as soon as it resolves
-WorldSnapshotIntrabuf.CODEC.read(in, new WorldSnapshotIntrabuf.Visitor() {
-    @Override public void players(Player p) { world.spawn(p); }
-    @Override public void tiles(Tile t)     { world.place(t); }
+```java
+// streaming write: the facts line and declarations go out when the writer is made, then one line per call
+try (TraceIntrabuf.Writer log = TraceIntrabuf.writer(Files.newBufferedWriter(path))) {
+    log.frames(frame);
+    log.keys(keyPress);
+    log.flush();                                   // buffering is the output's business
+}
+
+// streaming read: each row goes to the visitor as soon as it is read; nothing else is kept
+Header facts = TraceIntrabuf.CODEC.read(text, new TraceIntrabuf.Visitor() {
+    @Override public void frames(Frame f)  { ... }
+    @Override public void keys(KeyPress k) { ... }  // members not overridden are ignored
 });
 
-// streaming write: rows go out in the order they are given, with blobs placed to keep the ordering profile
-try (var out = WorldSnapshotIntrabuf.CODEC.writer(stream)) {
-    out.players(ada);
-    out.tiles(origin);
-}
+// whole bundle
+Trace trace = TraceIntrabuf.fromText(text);        // or fromBytes(utf8)
+String text = TraceIntrabuf.toText(trace);
 ```
 
-The visitor has one method per member, named after it. Materialising a `WorldSnapshot` is the visitor that appends to
-lists.
+The visitor and the writer have one method per member, named after it. Materialising a `Trace` is the visitor that
+appends to lists. A reader takes the log as a `String` or UTF-8 bytes. The parse is streamed, but the text is in
+memory.
+
+The proposal, once there is a binary body:
+
+```java
+WorldSnapshot w = WorldSnapshotIntrabuf.fromBytes(payload);          // binary, text or archive
+byte[] bytes    = WorldSnapshotIntrabuf.toBytes(w);
+```
 
 ## Open questions
 

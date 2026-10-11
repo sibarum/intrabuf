@@ -40,6 +40,8 @@ public final class TextDocument {
     public static final String MAGIC = "#intrabuf";
     /** The text format version, the first token after {@link #MAGIC}. */
     public static final int VERSION = 1;
+    /** Declares a member of a bundle's log: {@code #member <name> <schema> <major>.<minor>}. */
+    public static final String MEMBER = "#member";
 
     private static final byte[] PREFIX = (MAGIC + " ").getBytes(StandardCharsets.US_ASCII);
     private static final byte[] BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
@@ -65,9 +67,10 @@ public final class TextDocument {
     }
 
     /**
-     * One table: the root message, an application header, or one nested message type at one version.
+     * One table: the root message, an application header, one nested message type at one version, or one member of
+     * a log.
      *
-     * @param kind  {@code "root"}, {@code "header"} or {@code "message"}
+     * @param kind  {@code "root"}, {@code "header"}, {@code "message"} or {@code "member"}
      * @param major -1 where the document does not say (root and header tables)
      */
     public record Table(String kind, String name, int major, int minor, List<String> columns, int line) {
@@ -132,6 +135,26 @@ public final class TextDocument {
         TextDocument d = new TextDocument(text);
         d.parseDocument();
         return d;
+    }
+
+    /**
+     * What a bundle's log is parsed into, piece by piece as it is read: nothing is kept but the declarations, so a
+     * log of any length is read in the memory of one row.
+     */
+    interface LogSink {
+        /** The facts line has been read: check compatibility here, before any declaration or row. */
+        void facts(TextDocument d);
+
+        /** A {@code #member} declaration: its table carries the member's schema, version and columns. */
+        void member(String name, Table table);
+
+        /** A row of a declared member. */
+        void row(String member, Row row);
+    }
+
+    /** Parses a bundle's log, handing each part to {@code sink} as it is read. */
+    static void parseLog(String text, LogSink sink) {
+        new TextDocument(text).parseLogDocument(sink);
     }
 
     // ---- what was parsed ---------------------------------------------------------------------------------------
@@ -268,11 +291,11 @@ public final class TextDocument {
             if (marker.length != 2 || !marker[0].equals("#header")) {
                 throw error(at, "expected '#header <name>'");
             }
-            Table t = new Table("header", marker[1], -1, 0, columns(readLine(), false, line - 1), at);
+            Table t = new Table("header", marker[1], -1, 0, columns(readLine(), null, line - 1), at);
             header = row(t, false);
         }
         int at = line;
-        Table t = new Table("root", schemaName, major, minor, columns(readLine(), false, at), at);
+        Table t = new Table("root", schemaName, major, minor, columns(readLine(), null, at), at);
         root = row(t, false);
         while (pos < s.length()) {
             if (skipBlankOrComment()) {
@@ -286,6 +309,62 @@ public final class TextDocument {
                 throw error(line, "expected a '#message' or '#blobs' section, found '" + abbreviate(peekLine()) + "'");
             }
         }
+    }
+
+    /**
+     * A log: the facts line, then {@code #member} declarations and rows in any order, each row starting with the name
+     * of a member declared above it. There is no root table, and rows hold no references.
+     */
+    private void parseLogDocument(LogSink sink) {
+        if (s.startsWith("﻿")) {
+            pos = 1;
+        }
+        parseFacts(readLine());
+        sink.facts(this);
+        Map<String, Table> members = new HashMap<>();
+        while (pos < s.length()) {
+            if (skipBlankOrComment()) {
+                continue;
+            }
+            if (lineStartsWith(MEMBER)) {
+                int at = line;
+                String[] marker = tokens(readLine());
+                if (marker.length != 4) {
+                    throw error(at, "expected '" + MEMBER + " <name> <schema> <major>.<minor>'");
+                }
+                String name = marker[1];
+                if (!isIdentifier(name)) {
+                    throw error(at, "member name '" + name + "' is not an identifier");
+                }
+                int[] v = version(marker[3], at);
+                int colLine = line;
+                Table t = new Table("member", marker[2], v[0], v[1], columns(readLine(), name, colLine), at);
+                if (members.putIfAbsent(name, t) != null) {
+                    throw error(at, "member " + name + " is declared twice");
+                }
+                sink.member(name, t);
+            } else if (peek() == '#') {
+                throw error(line, "a log holds only '" + MEMBER + "' declarations and rows, not '"
+                        + abbreviate(peekLine()) + "'");
+            } else {
+                int at = line;
+                int from = pos;
+                while (pos < s.length() && s.charAt(pos) != ',' && s.charAt(pos) != '\n' && s.charAt(pos) != '\r') {
+                    pos++;
+                }
+                String name = s.substring(from, pos).strip();
+                Table t = members.get(name);
+                if (t == null) {
+                    throw error(at, "'" + abbreviate(name) + "' is not a member declared above this row");
+                }
+                sink.row(name, new Row(0, t, cells(t, true, at, name + " row"), at));
+            }
+        }
+    }
+
+    private static boolean isIdentifier(String n) {
+        return !n.isEmpty() && Character.isJavaIdentifierStart(n.charAt(0))
+                && n.chars().allMatch(Character::isJavaIdentifierPart);
     }
 
     private void parseFacts(String first) {
@@ -358,7 +437,7 @@ public final class TextDocument {
         }
         int[] v = version(marker[2], at);
         int colLine = line;
-        Table t = new Table("message", marker[1], v[0], v[1], columns(readLine(), true, colLine), at);
+        Table t = new Table("message", marker[1], v[0], v[1], columns(readLine(), "&", colLine), at);
         while (pos < s.length()) {
             if (skipBlankOrComment()) {
                 continue;
@@ -401,15 +480,19 @@ public final class TextDocument {
         }
     }
 
-    /** A columns line. Message sections start theirs with {@code &}, the column of row numbers. */
-    private static List<String> columns(String l, boolean refColumn, int at) {
+    /**
+     * A columns line. Some start with a column that says which row is which, given as {@code first}: {@code &} (the
+     * row numbers) in a message section, the member's name in a log's declaration. Null if there is none.
+     */
+    private static List<String> columns(String l, String first, int at) {
         List<String> out = new ArrayList<>();
         String[] parts = l.split(",", -1);
         for (int i = 0; i < parts.length; i++) {
             String c = parts[i].strip();
-            if (i == 0 && refColumn) {
-                if (!c.equals("&")) {
-                    throw error(at, "a #message section's columns start with '&'");
+            if (i == 0 && first != null) {
+                if (!c.equals(first)) {
+                    throw error(at, first.equals("&") ? "a #message section's columns start with '&'"
+                            : "member " + first + "'s columns start with its name, '" + first + "'");
                 }
                 continue;
             }
@@ -444,14 +527,22 @@ public final class TextDocument {
                 throw error(at, "row numbers start at 1");
             }
         }
+        return new Row(ref, t, cells(t, numbered, at, numbered ? "row &" + ref : t.name() + " row"), at);
+    }
+
+    /**
+     * The cells of a row, through the end of its line. A {@code prefixed} row has already had its first column read
+     * (its number, or its member's name), and the cells follow a comma.
+     */
+    private List<Node> cells(Table t, boolean prefixed, int at, String what) {
         List<Node> cells = new ArrayList<>(t.columns().size());
-        if (numbered && atEndOfLine()) {
+        if (prefixed && atEndOfLine()) {
             endLine();
         } else {
-            if (numbered) {
+            if (prefixed) {
                 skipWs();
                 if (peek() != ',') {
-                    throw error(line, "expected ',' after &" + ref);
+                    throw error(line, "expected ',' after the start of " + what);
                 }
                 pos++;
             }
@@ -472,10 +563,10 @@ public final class TextDocument {
             cells.clear(); // an empty line, for a message with no fields
         }
         if (cells.size() != t.columns().size()) {
-            throw error(at, (numbered ? "row &" + ref : t.name() + " row") + " has " + cells.size()
-                    + " cell(s); its table has " + t.columns().size() + " column(s): " + String.join(",", t.columns()));
+            throw error(at, what + " has " + cells.size() + " cell(s); its table has " + t.columns().size()
+                    + " column(s): " + String.join(",", t.columns()));
         }
-        return new Row(ref, t, List.copyOf(cells), at);
+        return List.copyOf(cells);
     }
 
     // ---- parsing: values ---------------------------------------------------------------------------------------

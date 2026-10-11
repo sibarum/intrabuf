@@ -153,6 +153,13 @@ An application header has no magic number. `HeaderCodec.readFrame` tells a text 
 `#intrabuf `. An application whose binary header could begin with those bytes should call `readTextFrame` itself when
 its own framing says the frame is text.
 
+## Logs
+
+A bundle (`@IntrabufBundle`) is written as a log rather than as a document. A log has the same facts line and the same
+cells, but no root table, no references and no `#blobs`. Each member is declared once with a `#member` line and a
+columns line, and then rows follow in any order, each starting with its member's name. See
+[bundle-format.md](bundle-format.md#text-body-the-log).
+
 ## API
 
 ```java
