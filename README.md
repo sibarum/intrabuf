@@ -1,11 +1,13 @@
 # Intrabuf
 
-Compile-time binary serialization for Java records. Annotate a record; an annotation processor generates a codec of
-straight-line reads and writes. Nothing reflects at runtime, so it works as-is under GraalVM native-image.
+Serialization for data that stays inside your own system. Annotate a Java record; an annotation processor generates
+a codec of straight-line reads and writes. Nothing reflects at runtime, so it works as-is under GraalVM native-image.
 
-Intrabuf is for the case where both sides are your code and all you need is for the right data to arrive, quickly
-and in few bytes. You don't design the binary format. You declare how a schema is allowed to evolve, and every
-payload carries enough header to prove the reader can decode it.
+Intrabuf makes one promise: **the same version of the same schema, from the same build, reads what it wrote.**
+Everything beyond that is configured per schema: older readers, newer readers, other versions, an application's own
+header, binary or text, many messages in one payload, the order they arrive in, how much is checked and how much is
+trusted. Each choice costs bytes or time, so you take only the ones you need. It is designed to be optimized beyond
+sanity.
 
 ```java
 @IntrabufMessage(name = "example.Customer", minor = 2, compat = Compat.BACKWARD)
@@ -26,6 +28,41 @@ Customer back  = CustomerIntrabuf.fromBytes(payload);
 
 Every codec also speaks a human-readable [text format](#readable-the-text-format), and `fromBytes` accepts either
 format, so any message can go over the wire as text when a person needs to read or write it.
+
+## Design: intra
+
+**Both ends are yours.** Intrabuf carries data between components of one system, written by the same people and
+built together. It isn't a format for strangers. The payloads are trusted, so whatever a reader checks, it checks to
+catch mistakes, not attacks. That's also what lets a schema trade checks for speed: when a schema says a fact will be
+on the wire (a length, a count, an order), a reader may rely on it without looking, and a payload that breaks the
+promise is undefined behaviour.
+
+**One promise, everything else configured.** Intrabuf starts from strict equality, the way 2/4 and 1/2 are different
+until you choose to identify them: a payload is readable by exactly the schema version and build that wrote it, and
+nothing more is assumed. From there you declare invariants, and the rest follows from them. Declaring "older payloads
+stay readable" gives you BACKWARD, and declaring "every blob arrives before the rows that use it" gives you a reader that builds each record the moment
+it arrives. No
+equivalence is imposed that you didn't ask for. Each invariant a schema can declare:
+
+| configured                         | what it buys                                                           | today      |
+|------------------------------------|------------------------------------------------------------------------|------------|
+| compat mode (STRICT, BACKWARD, FULL) | newer readers of older payloads, and older readers of newer ones      | yes        |
+| snapshot builds                    | drift caught while version numbers stand still                         | yes        |
+| your own header                    | intrabuf's facts in your frame instead of in front of it               | yes        |
+| binary or text                     | a person can read or write any message                                 | yes        |
+| bundles                            | many messages of planned kinds in one payload                          | as a text log |
+| ordering profiles                  | a receiver that stream-parses gets rows in the order it needs          | planned    |
+| hints                              | lengths and counts out of band, advisory or relied on                   | planned    |
+| shared blobs, size caps            | one blob for many rows; bounded memory                                 | planned    |
+| `.intrabuf` archives               | a debug export whose blobs are files, opened by an analyzer tool      | planned    |
+
+**Where it's going.** Intrabuf is to be the stream of data between two components: unbounded, not infinite. Every
+payload is self-contained, but nothing caps what a payload can hold or how one is laid out. A sender that just needs to spray
+data at a receiver can. A receiver that needs rows in a particular order to stream-parse them can declare that, and
+the writer holds rows back until it can comply. A keyframe or scene re-sync, loading the whole world in one frame, is
+one large streamed payload, not a million small messages, with every reference resolving before the next row. Order
+across messages isn't data: what happened when comes from timestamps in the data (kronometer's synchronized clocks in
+this stack), not from where a row falls in the stream. The design is in [docs/bundle-format.md](docs/bundle-format.md).
 
 ## Modules
 
@@ -73,7 +110,7 @@ format, so any message can go over the wire as text when a person needs to read 
 Build and test everything with `mvn install`. Build the native CLI with `mvn -Pnative -DskipTests package` (it
 lands at `intrabuf-cli/target/intrabuf[.exe]`).
 
-## Correct data: what the header guarantees
+## Correct data: what the header checks
 
 Every payload starts with a header: magic and wire version, flags, schema id, major, minor, and a structural
 fingerprint where needed. A release payload in BACKWARD or FULL mode spends 8 bytes on the header. STRICT schemas
@@ -90,7 +127,9 @@ and snapshot builds spend 12. Readers decide from the header alone whether they 
   while its schemas do. The header also flags the payload as coming from a dev build, and the CLI shows it.
 
 Failures throw `IncompatiblePayloadException` with a `Reason`, the reader's `SchemaInfo` and the payload's `Header`.
-Malformed input of any kind throws `IntrabufException`. The fuzz tests check that nothing else escapes.
+Today's decoders reject malformed input with `IntrabufException`, and the fuzz tests check that nothing else escapes.
+That describes the current decoders, not a promise: options that trade checks for speed are planned (see
+[Design](#design-intra)).
 
 ### Your own header
 

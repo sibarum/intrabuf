@@ -1,6 +1,7 @@
 # Intrabuf wire format, version 1
 
-A payload is a **header** followed by the **body** of one root message. All multi-byte fixed-width values are
+A message payload is a **header** followed by the **body** of one root message. (Bundles, which hold many messages,
+are written as text logs for now; their binary body is a proposal in `bundle-format.md`.) All multi-byte fixed-width values are
 little-endian. "varint" is unsigned LEB128; "zigzag" is a varint of `(n << 1) ^ (n >> 63)` (or `>> 31`).
 
 ## Header

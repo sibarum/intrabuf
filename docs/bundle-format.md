@@ -6,9 +6,13 @@
 > messages in bundles, archives, and bundles in the manifest and the CLI. Names, chunk tags and error codes in those
 > parts are placeholders to argue about.
 
-A payload today holds one root message. A **bundle** holds many top-level messages of several kinds in one
+A message payload holds one root message. A **bundle** holds many top-level messages of several kinds in one
 self-contained payload, under one header. The motivating case is a keyframe, or scene re-sync: loading the whole
 world in one frame, streamed as one large payload rather than a million separate messages.
+
+Bundles follow the rest of intrabuf: both ends are trusted, and everything past "the same build reads what it wrote"
+is something the schema asks for. A sender that only wants to spray rows at a receiver, and a receiver that needs
+them in a particular order to stream-parse them, should both be served without the format getting in the way.
 
 A bundle is planned ahead. Its schema lists every kind of message it may contain, and nothing else can go in. You
 can't combine arbitrary payloads.
@@ -44,13 +48,14 @@ which doesn't change: a bundle payload starts with the built-in header or an app
 message payload does. Whether a schema is a bundle is a property of the schema, recorded in the manifest. The
 fingerprint covers the member list, the ordering profile and any mandated hints.
 
-## What a bundle guarantees
+## What a bundle is
 
 * **Self-contained.** Row ids and blob ids are scoped to the bundle. Every reference resolves inside it, and the
   checks that need the whole payload run when it ends.
 * **Order within a member is kept.** `players()` lists players in the order they were written.
 * **Order across members is not data.** Whether player 3 came before tile 7 carries no meaning, and writers may
-  interleave rows however suits them. Anything that needs time ordering carries a timestamp as a field.
+  interleave rows however suits them. Anything that needs time ordering carries a timestamp as a field. In this stack
+  those come from kronometer's synchronized clocks, which are trusted like everything else.
 * **Blobs can be shared.** Any number of rows, of any members, may refer to the same blob.
 
 ## Ordering profiles
