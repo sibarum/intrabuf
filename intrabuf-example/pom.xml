@@ -46,6 +46,9 @@
                     <compilerArgs>
                         <!-- Recorded in every payload and the manifest; a -SNAPSHOT version marks payloads as dev. -->
                         <arg>-Aintrabuf.buildVersion=${project.version}</arg>
+                        <!-- Dev whatever the version: the tests read these payloads as the snapshot case, so a
+                             release of the project must not turn them into release payloads. -->
+                        <arg>-Aintrabuf.snapshot=true</arg>
                         <!-- Manifest lands at META-INF/intrabuf/intrabuf-example.json. -->
                         <arg>-Aintrabuf.module=${project.artifactId}</arg>
                     </compilerArgs>
