@@ -201,6 +201,14 @@ final class CodecGenerator {
             line("    return new " + m.javaName() + "(" + args + ");");
             line("}");
         }
+        List<String> nested = Models.nestedCodecs(m);
+        if (!nested.isEmpty()) {
+            line("");
+            line("@Override");
+            line("protected java.util.List<" + RT + "MessageCodec<?>> nested() {");
+            line("    return java.util.List.of(" + String.join(", ", nested.stream().map(c -> c + ".CODEC").toList()) + ");");
+            line("}");
+        }
         if (m.promotion() != null) {
             line("");
             line("@Override");

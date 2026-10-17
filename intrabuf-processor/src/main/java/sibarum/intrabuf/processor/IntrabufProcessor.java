@@ -3,6 +3,7 @@ package sibarum.intrabuf.processor;
 import sibarum.intrabuf.Header;
 import sibarum.intrabuf.SchemaInfo;
 import sibarum.intrabuf.annotation.IntrabufBundle;
+import sibarum.intrabuf.annotation.IntrabufEndpoint;
 import sibarum.intrabuf.annotation.IntrabufHeader;
 import sibarum.intrabuf.annotation.IntrabufMessage;
 import sibarum.intrabuf.schema.HeaderDef;
@@ -62,11 +63,13 @@ public final class IntrabufProcessor extends AbstractProcessor {
     /** The released manifests, if {@code intrabuf.history} is set; loaded with the first schemas. */
     private History history;
     private final List<MessageModel> generated = new ArrayList<>();
+    private Endpoints endpoints;
+    private final List<Endpoints.EndpointModel> generatedEndpoints = new ArrayList<>();
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
         return Set.of(IntrabufMessage.class.getCanonicalName(), IntrabufHeader.class.getCanonicalName(),
-                IntrabufBundle.class.getCanonicalName());
+                IntrabufBundle.class.getCanonicalName(), IntrabufEndpoint.class.getCanonicalName());
     }
 
     @Override
@@ -83,6 +86,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
     public synchronized void init(ProcessingEnvironment env) {
         super.init(env);
         models = new Models(env);
+        endpoints = new Endpoints(env, models);
         buildVersion = env.getOptions().getOrDefault(OPT_BUILD_VERSION, "unversioned");
         String snap = env.getOptions().get(OPT_SNAPSHOT);
         snapshot = snap != null ? Boolean.parseBoolean(snap)
@@ -93,7 +97,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment round) {
         if (round.processingOver()) {
-            if (!generated.isEmpty() && !models.hasErrors()) {
+            if ((!generated.isEmpty() || !generatedEndpoints.isEmpty()) && !models.hasErrors() && !endpoints.hasErrors()) {
                 writeManifest();
             }
             return false;
@@ -105,7 +109,13 @@ public final class IntrabufProcessor extends AbstractProcessor {
                 models.markLocal(te);
             }
         }
-        if (records.isEmpty()) {
+        List<TypeElement> endpointTypes = new ArrayList<>();
+        for (Element e : round.getElementsAnnotatedWith(IntrabufEndpoint.class)) {
+            if (e instanceof TypeElement te) {
+                endpointTypes.add(te);
+            }
+        }
+        if (records.isEmpty() && endpointTypes.isEmpty()) {
             return false;
         }
         if (!processingEnv.getOptions().containsKey(OPT_BUILD_VERSION) && !processingEnv.getOptions().containsKey(OPT_SNAPSHOT)) {
@@ -119,12 +129,30 @@ public final class IntrabufProcessor extends AbstractProcessor {
                 built.add(m);
             }
         }
-        if (models.hasErrors() || !models.link() || !checkHistory()) {
+        List<Endpoints.EndpointModel> declared = new ArrayList<>();
+        for (TypeElement te : endpointTypes) {
+            Endpoints.EndpointModel e = endpoints.parse(te);
+            if (e != null) {
+                declared.add(e);
+            }
+        }
+        if (models.hasErrors() || endpoints.hasErrors() || !models.link() || !checkHistory()) {
+            return true;
+        }
+        boolean endpointsOk = true;
+        for (Endpoints.EndpointModel e : declared) {
+            endpointsOk &= endpoints.check(e) && endpoints.checkAgainst(e, history, buildVersion);
+        }
+        if (!endpointsOk) {
             return true;
         }
         for (MessageModel m : built) {
             write(m);
             generated.add(m);
+        }
+        for (Endpoints.EndpointModel e : declared) {
+            writeEndpoint(e);
+            generatedEndpoints.add(e);
         }
         return true;
     }
@@ -139,6 +167,18 @@ public final class IntrabufProcessor extends AbstractProcessor {
             history = History.load(java.nio.file.Path.of(dir), module, processingEnv.getMessager());
         }
         return history.check(models);
+    }
+
+    private void writeEndpoint(Endpoints.EndpointModel e) {
+        try {
+            JavaFileObject file = processingEnv.getFiler().createSourceFile(e.codecName(), e.element());
+            try (Writer w = file.openWriter()) {
+                w.write(endpoints.generate(e, buildVersion, snapshot));
+            }
+        } catch (IOException x) {
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
+                    "intrabuf: cannot write " + e.codecName() + ": " + x.getMessage(), e.element());
+        }
     }
 
     private void write(MessageModel m) {
@@ -175,12 +215,18 @@ public final class IntrabufProcessor extends AbstractProcessor {
                 .thenComparingInt(MessageDef::minor).thenComparing(d -> d.info().javaType()));
         List<EnumDef> enums = new ArrayList<>(models.enums().values());
         enums.sort(Comparator.comparing(EnumDef::name));
+        List<sibarum.intrabuf.endpoint.EndpointDef> endpointDefs = new ArrayList<>();
+        for (Endpoints.EndpointModel e : generatedEndpoints) {
+            endpointDefs.add(endpoints.def(e));
+        }
+        endpointDefs.sort(Comparator.comparing(sibarum.intrabuf.endpoint.EndpointDef::name));
         Manifest manifest = new Manifest(Manifest.FORMAT, Header.WIRE_VERSION, module, buildVersion, snapshot, messages, enums,
-                headers);
+                headers, endpointDefs);
         String path = Manifest.RESOURCE_DIR + module + ".json";
         try {
             FileObject file = processingEnv.getFiler().createResource(StandardLocation.CLASS_OUTPUT, "", path,
-                    generated.stream().map(MessageModel::element).toArray(Element[]::new));
+                    java.util.stream.Stream.concat(generated.stream().map(MessageModel::element),
+                            generatedEndpoints.stream().map(Endpoints.EndpointModel::element)).toArray(Element[]::new));
             try (Writer w = file.openWriter()) {
                 w.write(ManifestJson.write(manifest));
             }

@@ -451,6 +451,78 @@ class DiagnosticsTest {
         failsAgainst(junk, "@IntrabufMessage record T(int a) {}", "is not a manifest");
     }
 
+    // ---- endpoints ----------------------------------------------------------------------------------------------
+
+    private static final String Q = "@IntrabufMessage(name = \"t.Q\", compat = Compat.FULL) record Q(int a) {}\n";
+    private static final String P = "@IntrabufMessage(name = \"t.P\", compat = Compat.BACKWARD) record P(int a) {}\n";
+
+    private static String endpoint(String oldestPeer) {
+        return "@IntrabufEndpoint(name = \"t.E\", oldestPeer = \"" + oldestPeer + "\", requests = Q.class, responses = P.class)\n"
+                + "interface E {}\n";
+    }
+
+    @Test
+    void anEndpointGeneratesItsDescriptorsAndGoesInTheManifest() throws IOException {
+        Result r = compile(HEADER + Q + P + endpoint("").replace(", oldestPeer = \"\"", ""));
+        assertTrue(r.success(), r.diagnostics());
+        assertTrue(Files.exists(r.out().resolve("t/EIntrabuf.class")), "endpoint class compiled");
+        String manifest = Files.readString(r.out().resolve("META-INF/intrabuf/t.json"));
+        assertTrue(manifest.contains("\"endpoints\": [") && manifest.contains("\"schema\": \"t.Q\"")
+                && manifest.contains("\"side\": \"RESPONSE\""), manifest);
+        assertTrue(!compile(HEADER + Q).diagnostics().contains("endpoints"));
+    }
+
+    @Test
+    void endpointDeclarations() {
+        fails(Q + "@IntrabufEndpoint(requests = Q.class) @IntrabufMessage record R(int a) {}", "goes on a type of its own");
+        fails(Q + "@IntrabufEndpoint(requests = String.class) interface E {}", "lists java.lang.String, which is not an @IntrabufMessage record");
+        fails(Q + "@IntrabufEndpoint(requests = {Q.class, Q.class}) interface E {}", "Q is listed twice in requests");
+        fails(Q + P + "@IntrabufEndpoint(requests = Q.class, optional = P.class) interface E {}", "optional P is neither a request nor a response");
+        fails(ACCOUNT_V1 + ACCOUNT_V2.replace("major = 2,", "major = 2, oldest = \"1.0\",")
+                + "@IntrabufEndpoint(name = \"t.E\", requests = A1.class) interface E {}", "t.A1 is a past version of t.A, which is only read");
+        fails(Q + P + endpoint("1.0.0"), "oldestPeer = \"1.0.0\" is checked against the module's released manifests, so it needs -Aintrabuf.history");
+    }
+
+    @Test
+    void anEndpointIsCheckedAgainstEveryReleaseFromItsOldestPeer() {
+        Path h = newHistory();
+        release(Q + P + endpoint(""), "1.0.0", h);
+        Result same = against(h, Q + P + endpoint("1.0.0"));
+        assertTrue(same.success(), same.diagnostics());
+
+        // A FULL request gains a field: the old server reads its own fields and passes over the rest.
+        Result full = against(h, "@IntrabufMessage(name = \"t.Q\", minor = 1, compat = Compat.FULL)"
+                + " record Q(int a, @Field(since = 1) Integer b) {}\n" + P + endpoint("1.0.0"));
+        assertTrue(full.success(), full.diagnostics());
+
+        // A BACKWARD response gains a field: an old client can't read it.
+        String bumped = "@IntrabufMessage(name = \"t.P\", minor = 1, compat = Compat.BACKWARD)"
+                + " record P(int a, @Field(since = 1) Integer b) {}\n";
+        failsAgainst(h, Q + bumped + endpoint("1.0.0"), "this build doesn't work with release 1.0.0, which is at or after"
+                + " oldestPeer = \"1.0.0\":\n  t.E: this server (9.0.0) and the client (1.0.0) can't interoperate");
+        failsAgainst(h, Q + bumped + endpoint("1.0.0"), "sends    t.P 1.1 → client reads 1.0: t.P is BACKWARD, so a newer"
+                + " minor doesn't demote");
+        failsAgainst(h, Q + bumped + endpoint("1.0.0"), "or raise oldestPeer above 1.0.0 to stop supporting it");
+
+        // Past the window, the same change compiles.
+        Result later = against(h, Q + bumped + endpoint("1.1.0"));
+        assertTrue(later.success(), later.diagnostics());
+    }
+
+    @Test
+    void aReleaseInTheWindowMustHaveTheEndpoint() {
+        Path h = newHistory();
+        release(Q + P, "1.0.0", h);
+        failsAgainst(h, Q + P + endpoint("1.0.0"), "release 1.0.0 is at or after oldestPeer = \"1.0.0\" but has no endpoint t.E");
+    }
+
+    @Test
+    void buildVersionsCompareByTheirNumbers() {
+        assertTrue(Endpoints.compareBuilds("1.10.0", "1.4.0") > 0);
+        assertTrue(Endpoints.compareBuilds("1.4.0", "1.4.0") == 0);
+        assertTrue(Endpoints.compareBuilds("0.9.1", "1.0") < 0);
+    }
+
     @Test
     void sinceOnStrictWarns() {
         Result r = compile(HEADER + "@IntrabufMessage(minor = 1) record T(@Field(since = 1) int a) {}");

@@ -62,6 +62,16 @@ public abstract class MessageCodec<T> {
         return schema;
     }
 
+    /** The major of the oldest version this codec reads as a top-level payload. */
+    public final int oldestMajor() {
+        return oldestMajor;
+    }
+
+    /** The minor of the oldest version this codec reads as a top-level payload. */
+    public final int oldestMinor() {
+        return oldestMinor;
+    }
+
     /** The fields a payload written at {@code minor} has, in order: its text columns. */
     public final List<String> columns(int minor) {
         if (schema.compat() == Compat.STRICT || minor >= schema.minor()) {
@@ -255,6 +265,21 @@ public abstract class MessageCodec<T> {
     /** The codec of the previous major, if this schema declares a promotion from it; null otherwise. */
     protected MessageCodec<?> previous() {
         return null;
+    }
+
+    /** The codecs of the messages this one holds as fields, at any depth of collection. Generated when there are any. */
+    protected List<MessageCodec<?>> nested() {
+        return List.of();
+    }
+
+    /** The codec of the previous major this one promotes from, or null. */
+    public final MessageCodec<?> previousMajor() {
+        return previous();
+    }
+
+    /** The codecs of the messages this one holds directly. */
+    public final List<MessageCodec<?>> nestedCodecs() {
+        return nested();
     }
 
     /** Calls the {@code @Promote} method from the previous major. Generated when {@link #previous()} is. */

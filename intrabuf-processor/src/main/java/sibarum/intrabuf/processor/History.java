@@ -37,6 +37,7 @@ final class History {
     /** By {@code name major}: the highest minor released. */
     private final Map<String, Released> lastOfMajor = new LinkedHashMap<>();
     private final Set<String> checked = new HashSet<>();
+    private final List<Manifest> releases = new java.util.ArrayList<>();
     private boolean errors;
 
     private History(Messager messager) {
@@ -85,6 +86,7 @@ final class History {
     }
 
     private void add(Manifest m, Path file) {
+        releases.add(m);
         for (MessageDef d : m.messages()) {
             String key = d.name() + " " + d.major() + "." + d.minor();
             Released prev = released.get(key);
@@ -107,6 +109,11 @@ final class History {
 
     boolean hasErrors() {
         return errors;
+    }
+
+    /** The release manifests, in file name order. */
+    List<Manifest> releases() {
+        return List.copyOf(releases);
     }
 
     /** Checks every message model not yet checked. Returns false if any check failed. */

@@ -1,5 +1,7 @@
 package sibarum.intrabuf.schema;
 
+import sibarum.intrabuf.endpoint.EndpointDef;
+
 import java.util.List;
 
 /**
@@ -13,9 +15,11 @@ import java.util.List;
  * @param buildVersion version of the build ({@code -Aintrabuf.buildVersion})
  * @param snapshot     whether the build was a snapshot
  * @param headers      the build's own {@code @IntrabufHeader} formats
+ * @param endpoints    the build's {@code @IntrabufEndpoint}s
  */
 public record Manifest(int format, int wireVersion, String module, String buildVersion, boolean snapshot,
-                       List<MessageDef> messages, List<EnumDef> enums, List<HeaderDef> headers) {
+                       List<MessageDef> messages, List<EnumDef> enums, List<HeaderDef> headers,
+                       List<EndpointDef> endpoints) {
 
     public static final int FORMAT = 1;
     public static final String RESOURCE_DIR = "META-INF/intrabuf/";
@@ -24,5 +28,12 @@ public record Manifest(int format, int wireVersion, String module, String buildV
         messages = List.copyOf(messages);
         enums = List.copyOf(enums);
         headers = List.copyOf(headers);
+        endpoints = List.copyOf(endpoints);
+    }
+
+    /** A manifest with no endpoints. */
+    public Manifest(int format, int wireVersion, String module, String buildVersion, boolean snapshot,
+                    List<MessageDef> messages, List<EnumDef> enums, List<HeaderDef> headers) {
+        this(format, wireVersion, module, buildVersion, snapshot, messages, enums, headers, List.of());
     }
 }

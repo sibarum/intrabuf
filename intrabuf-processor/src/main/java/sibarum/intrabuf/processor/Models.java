@@ -164,6 +164,11 @@ final class Models {
         locals.add(te.getQualifiedName().toString());
     }
 
+    /** Whether {@code te} is annotated in this compilation, rather than read from a jar. */
+    boolean isLocal(TypeElement te) {
+        return locals.contains(te.getQualifiedName().toString());
+    }
+
     private String recordNameOfCodec(JType t) {
         return recordByCodec.get(t.className());
     }
@@ -841,6 +846,15 @@ final class Models {
             MessageModel m = byName.get(name);
             return m == null ? null : new MessageDef(placeholder(m), m.defs());
         }, enums::get);
+    }
+
+    /** The codecs of the messages {@code m} holds directly, each once, in field order. */
+    static List<String> nestedCodecs(MessageModel m) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        for (FieldModel f : m.fields()) {
+            out.addAll(messageCodecs(f.type(), new ArrayList<>()));
+        }
+        return List.copyOf(out);
     }
 
     private static List<String> messageCodecs(JType t, List<String> out) {

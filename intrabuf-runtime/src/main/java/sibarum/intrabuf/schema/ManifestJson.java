@@ -4,6 +4,8 @@ import sibarum.intrabuf.Compat;
 import sibarum.intrabuf.HeaderRole;
 import sibarum.intrabuf.Hex;
 import sibarum.intrabuf.SchemaInfo;
+import sibarum.intrabuf.endpoint.EndpointDef;
+import sibarum.intrabuf.endpoint.Version;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -49,8 +51,44 @@ public final class ManifestJson {
             sb.append(i == 0 ? "\n" : ",\n");
             writeMessage(sb, m.headers().get(i).def(), m.headers().get(i).roles());
         }
-        sb.append(m.headers().isEmpty() ? "]\n" : "\n  ]\n");
-        sb.append("}\n");
+        sb.append(m.headers().isEmpty() ? "]" : "\n  ]");
+        if (!m.endpoints().isEmpty()) {
+            // Only when there are any, so a manifest without endpoints is byte for byte what it always was.
+            sb.append(",\n  \"endpoints\": [");
+            for (int i = 0; i < m.endpoints().size(); i++) {
+                EndpointDef e = m.endpoints().get(i);
+                sb.append(i == 0 ? "\n" : ",\n");
+                sb.append("    {\n");
+                sb.append("      \"name\": ").append(Json.quote(e.name())).append(",\n");
+                sb.append("      \"oldestPeer\": ").append(Json.quote(e.oldestPeer())).append(",\n");
+                sb.append("      \"members\": [");
+                for (int k = 0; k < e.members().size(); k++) {
+                    EndpointDef.Member mb = e.members().get(k);
+                    sb.append(k == 0 ? "\n" : ",\n");
+                    sb.append("        { \"schema\": ").append(Json.quote(mb.schema()))
+                            .append(", \"id\": ").append(Json.quote(Hex.int32(mb.id())))
+                            .append(", \"compat\": ").append(Json.quote(mb.compat().name()))
+                            .append(", \"fingerprint\": ").append(Json.quote(Hex.int32(mb.fingerprint())))
+                            .append(", \"version\": ").append(Json.quote(mb.version().toString()))
+                            .append(", \"oldest\": ").append(Json.quote(mb.oldest().toString()))
+                            .append(", \"side\": ").append(Json.quote(mb.side().name()))
+                            .append(", \"optional\": ").append(mb.optional())
+                            .append(", \"nested\": [");
+                    for (int n = 0; n < mb.nested().size(); n++) {
+                        EndpointDef.Nested ne = mb.nested().get(n);
+                        sb.append(n == 0 ? "" : ", ").append("{ \"schema\": ").append(Json.quote(ne.schema()))
+                                .append(", \"compat\": ").append(Json.quote(ne.compat().name()))
+                                .append(", \"version\": ").append(Json.quote(ne.version().toString()))
+                                .append(", \"written\": ").append(ne.written()).append(" }");
+                    }
+                    sb.append("] }");
+                }
+                sb.append(e.members().isEmpty() ? "]\n" : "\n      ]\n");
+                sb.append("    }");
+            }
+            sb.append("\n  ]");
+        }
+        sb.append("\n}\n");
         return sb.toString();
     }
 
@@ -119,8 +157,27 @@ public final class ManifestJson {
             }
             headers.add(new HeaderDef(parseMessage(h), roles));
         }
+        List<EndpointDef> endpoints = new ArrayList<>();
+        for (Object o : (List<Object>) root.getOrDefault("endpoints", List.of())) {
+            Map<String, Object> e = (Map<String, Object>) o;
+            List<EndpointDef.Member> members = new ArrayList<>();
+            for (Object mo : (List<Object>) e.get("members")) {
+                Map<String, Object> mb = (Map<String, Object>) mo;
+                List<EndpointDef.Nested> nested = new ArrayList<>();
+                for (Object no : (List<Object>) mb.getOrDefault("nested", List.of())) {
+                    Map<String, Object> ne = (Map<String, Object>) no;
+                    nested.add(new EndpointDef.Nested(str(ne, "schema"), Compat.valueOf(str(ne, "compat")),
+                            Version.parse(str(ne, "version")), Boolean.TRUE.equals(ne.get("written"))));
+                }
+                members.add(new EndpointDef.Member(str(mb, "schema"), Hex.parseInt32(str(mb, "id")),
+                        Compat.valueOf(str(mb, "compat")), Hex.parseInt32(str(mb, "fingerprint")),
+                        Version.parse(str(mb, "version")), Version.parse(str(mb, "oldest")),
+                        EndpointDef.Side.valueOf(str(mb, "side")), Boolean.TRUE.equals(mb.get("optional")), nested));
+            }
+            endpoints.add(new EndpointDef(str(e, "name"), (String) e.getOrDefault("oldestPeer", ""), members));
+        }
         return new Manifest(format, intOf(root, "wireVersion"), str(root, "module"), str(root, "buildVersion"),
-                Boolean.TRUE.equals(root.get("snapshot")), messages, enums, headers);
+                Boolean.TRUE.equals(root.get("snapshot")), messages, enums, headers, endpoints);
     }
 
     @SuppressWarnings("unchecked")

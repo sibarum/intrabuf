@@ -1,11 +1,11 @@
 # Intrabuf promotions and endpoints
 
-> **Status: partly implemented.** What exists is [promotions](#two-kinds-of-step): `@Promote`, `oldest`, past
-> versions and the chain the processor checks; the [split of the major mismatch](#reading-a-payload) into
-> `NEWER_MAJOR` and `BELOW_OLDEST`; and [history](#history-what-the-build-knows-about-the-past): `intrabuf freeze`
-> and the processor's checks of released versions. Still a proposal: [endpoints and the
-> handshake](#endpoints-and-the-handshake), their check against history, and the generated `promote` helper for
-> nested past records. Names in those parts are placeholders to argue about.
+> **Status: implemented,** except the generated `promote` helper for nested past records. What exists:
+> [promotions](#two-kinds-of-step) (`@Promote`, `oldest`, past versions, and the chain the processor checks); the
+> [split of the major mismatch](#reading-a-payload) into `NEWER_MAJOR` and `BELOW_OLDEST`;
+> [history](#history-what-the-build-knows-about-the-past) (`intrabuf freeze` and the processor's checks of released
+> versions); and [endpoints](#endpoints-and-the-handshake) (`@IntrabufEndpoint`, `Hello`, `Agreement`, and the check
+> against every release in the window). The [open questions](#open-questions) are still open.
 
 Without promotions a reader knows one version of each schema, and the compat mode says which other versions it puts
 up with. Older minors are read by giving new fields their defaults. Newer minors, in FULL, are read by ignoring what
@@ -178,7 +178,7 @@ was started. Every `*.json` directly in it must be a release manifest of this mo
 Snapshot builds are never in history. Between releases, history is the only past there is, which is what a
 development build's moving schemas need. Without `-Aintrabuf.history`, none of this is checked.
 
-Still to come here: **endpoints agree with every release in their window** (below).
+Endpoints are checked against every release in their window too ([below](#the-same-check-at-compile-time)).
 
 ## Reading a payload
 
@@ -220,59 +220,81 @@ interface Orders { }
 ```
 
 A client sends `requests` and receives `responses`; a server the reverse. The processor generates
-`OrdersIntrabuf.client()` and `.server()`, each a **descriptor**: for every schema the role touches, its id, compat
-mode and fingerprint, the version it writes, and the ranges it reads (`oldest` to current). It also writes the
-descriptor into the manifest, so history has every release's.
+`OrdersIntrabuf`: its `ENDPOINT`, and `client()` and `server()`, each a **descriptor**. For every schema, a
+descriptor holds its id, compat mode and fingerprint, the version this build writes, the range it reads (`oldest` to
+current), and the version of every message it holds, at any depth, including what the codecs of its past majors
+hold. The endpoint also goes into the manifest, so history has every release's.
+
+The processor rejects an endpoint on a record, a request or response that isn't an `@IntrabufMessage` record, one
+listed twice, an `optional` that is neither, and a past version (only read, so never sent).
 
 ### The exchange
 
-Before anything else, each peer sends its descriptor as an `intrabuf.Hello`. Hello is a schema intrabuf maintains
-itself: FULL, and only ever grown with version boundaries, so every intrabuf from now on reads every other one's.
+Before anything else, each peer sends its descriptor as a **Hello** (`Hello.encode`, `Hello.decode`). A Hello is
+intrabuf's own layout, not a schema: it starts `IBH`, which no payload does, and it only ever grows. Each member is
+length-prefixed, and anything after the members is ignored, so every intrabuf from now on reads every other one's.
 How it travels is the application's business, like any other payload.
+
+```java
+send(Hello.encode(OrdersIntrabuf.client()));
+Agreement a = Agreement.of(OrdersIntrabuf.client(), Hello.decode(receive())).require();   // throws with the table
+a.checkSend(CancelOrderIntrabuf.SCHEMA);                                                  // NOT_AGREED, before encoding
+```
 
 Each peer then computes `Agreement.of(mine, theirs)`. It is a pure function of the two descriptors, and the verdict
 for "A sends S to B" is the same cell whether A or B computes it. That is the symmetry: there is no message in which
-one side tells the other the result, so they can't disagree about it.
+one side tells the other the result, so they can't disagree about it. Different endpoint names, or two peers in the
+same role, never agree.
 
-For each schema S that A writes at version *w*, and B reads from *oldest* to *newest*:
+For each schema S that A writes at version *w*, and B reads from *oldest* to *newest*, in this order:
 
-| case                                              | verdict                                                     |
-|---------------------------------------------------|-------------------------------------------------------------|
-| *w* = *newest*, same fingerprint                  | identical                                                   |
-| *oldest* ≤ *w* < *newest*                         | B promotes                                                  |
-| *w* > *newest*, same major, S is FULL             | B demotes by layout                                         |
-| *w* > *newest*, same major, S is STRICT or BACKWARD | mismatch: B must reach *w*                                  |
-| *w*'s major > *newest*'s                          | mismatch: B must reach *w*'s major; majors don't demote      |
-| *w* < *oldest*                                    | mismatch: A must reach *oldest*, or B must promote from *w*  |
-| B doesn't receive S                               | mismatch, unless S is optional                              |
-| either peer is a snapshot and fingerprints differ | mismatch: `SNAPSHOT_DRIFT`                                  |
+| case                                                | verdict                                                         |
+|-----------------------------------------------------|-----------------------------------------------------------------|
+| *w* = *newest*, same fingerprint                    | `IDENTICAL`                                                     |
+| *w*'s major > *newest*'s                            | `NEWER_MAJOR`: B must reach *w*'s major first; majors don't demote |
+| *w* < *oldest*                                      | `BELOW_OLDEST`: A must reach *oldest*, or B must promote from *w* |
+| A is a snapshot                                     | `SNAPSHOT_DRIFT`: a snapshot agrees only with its own structure |
+| *w*'s major < *newest*'s                            | `PROMOTES`, through B's chain                                   |
+| same major, different compat modes                  | `COMPAT_MISMATCH`                                               |
+| same major, S is STRICT                             | `MINOR_MISMATCH`, or `FINGERPRINT_MISMATCH` at the same version |
+| same major, *w* ≤ *newest*                          | `PROMOTES`, or `IDENTICAL` at the same version                  |
+| same major, *w* > *newest*, S is FULL               | `DEMOTES`: B reads its own fields and passes over the rest      |
+| same major, *w* > *newest*, S is BACKWARD           | `NEWER_MINOR`: B must reach *w*                                 |
+| B doesn't receive S                                 | `NOT_RECEIVED`                                                  |
+
+A cell that reads is then checked message by message: S at a version B reads can still hold a BACKWARD message at a
+minor B's doesn't. That cell fails as the nested message's verdict, and says which message it is. A failed cell of an
+optional schema becomes `NOT_SENT`: the handshake still succeeds, `accepts(S)` is false, and `checkSend(S)` throws
+`NOT_AGREED` before any bytes exist.
+
+These verdicts are the per-payload decision, made early. A test holds them to it: for every pair of versions of every
+test schema, the handshake says a payload reads exactly when decoding it, binary and text, succeeds. That test is how
+the nested check was found to be needed.
 
 A mismatch fails the handshake on both sides with the full table, every schema and both directions, not the first
 problem found:
 
 ```
-app.Orders: this client (2.0.0) and the server (1.4.0) can't interoperate
-  sends    example.PlaceOrder 2.1 → server reads 1.0–1.5: no 2.x there; deploy the server ≥ 2.0.0 first
-  receives example.OrderPlaced 1.2 ← server writes 1.2: ok, promoted 1.2 → 3.0 here
-  sends    example.CancelOrder 1.0 → server doesn't receive it: optional, not sent
+test.Accounts: this client (1.0.0) and the server (1.0.0) can't interoperate
+  sends    test.Account 3.1 → server reads 2.0–2.1: majors never demote, so the peer must reach major 3 first: deploy the reader before the writer
+  receives test.Ledger 1.0 ← server writes 1.0; this client reads 1.0: ok
 ```
-
-An optional schema the peer can't take doesn't fail the handshake. Instead the sender knows: `agreement.accepts(S)`
-is false, and encoding S for that peer throws `NOT_AGREED` before any bytes exist. Identical descriptors, the usual
-case once a deploy has finished, are recognised by a descriptor fingerprint and skip the table.
 
 ### The same check at compile time
 
-`oldestPeer` is the oldest release this build promises to work with, in either role. The processor loads the
-descriptor of every release in history from `oldestPeer` on, and runs `Agreement.of` against each, both ways round.
-Any mismatch is a compile error with the same table. So:
+`oldestPeer` is the oldest release this build promises to work with, in either role. With `-Aintrabuf.history`, the
+processor takes the endpoint of every release in history from `oldestPeer` on (build versions compare by their
+numbers, so 1.10.0 follows 1.4.0) and runs `Agreement.of` against each, both ways round, treating this build as the
+release it will be. Any mismatch is a compile error with the same table, and a release in the window that has no
+such endpoint is an error too. `oldestPeer` without history is an error, since there is nothing to check it against.
+So:
 
 * **What this build supports is known at compile time.** It is its descriptors, and they are checked against the
   past it promised.
-* **What it demands of newer builds is published.** A future build loads this release's descriptor from history and
+* **What it demands of newer builds is published.** A future build loads this release's endpoint from history and
   must agree with it for as long as this release is inside its window. A newer build that drops a promotion an
-  in-window peer needs doesn't compile. Dropping that peer is a declaration in the newer build: raising
-  `oldestPeer`, or `oldest`.
+  in-window peer needs, or bumps a BACKWARD response an in-window client can't read, doesn't compile. Dropping that
+  peer is a declaration in the newer build: raising `oldestPeer`, or `oldest`.
 * **The runtime handshake can't find a problem the build didn't**, between releases in the window. It exists for what
   the build can't see: snapshot peers, releases outside the window, and peers that skipped a deploy.
 

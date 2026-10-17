@@ -48,7 +48,7 @@ equivalence is imposed that you didn't ask for. Each invariant a schema can decl
 |------------------------------------|------------------------------------------------------------------------|------------|
 | compat mode (STRICT, BACKWARD, FULL) | newer readers of older payloads, and older readers of newer ones      | yes        |
 | snapshot builds                    | drift caught while version numbers stand still                         | yes        |
-| [promotions and endpoints](docs/promotion.md) | older majors read through declared promotions; peers agree before sending | partly     |
+| [promotions and endpoints](docs/promotion.md) | older majors read through declared promotions; peers agree before sending | yes        |
 | your own header                    | intrabuf's facts in your frame instead of in front of it               | yes        |
 | binary or text                     | a person can read or write any message                                 | yes        |
 | bundles                            | many messages of planned kinds in one payload                          | as a text log |
@@ -222,8 +222,29 @@ public record Customer(long id, String first, String last, @Field(since = 1, non
 current version takes the usual path, untouched. The processor checks the chain at compile time: a missing
 promotion, an `oldest` the chain doesn't reach, a promotion nothing reaches, or a past record held by a current
 message is an error. Promotions are one way and adjacent (major *n* from *n − 1*), and STRICT schemas have none.
-With `-Aintrabuf.history` the processor also holds each past record to the release it stands for. The design,
-including the endpoint handshake still to come, is in [docs/promotion.md](docs/promotion.md).
+With `-Aintrabuf.history` the processor also holds each past record to the release it stands for. The design is in
+[docs/promotion.md](docs/promotion.md).
+
+### Endpoints: agreeing before sending
+
+An endpoint declares what goes each way between two components, and lets the peers find out before sending anything
+whether they can talk:
+
+```java
+@IntrabufEndpoint(name = "app.Orders", oldestPeer = "1.4.0",
+        requests = {PlaceOrder.class, CancelOrder.class}, responses = OrderPlaced.class, optional = CancelOrder.class)
+interface Orders { }
+
+send(Hello.encode(OrdersIntrabuf.client()));                     // what this build writes and reads
+Agreement a = Agreement.of(OrdersIntrabuf.client(), Hello.decode(receive())).require();
+a.checkSend(CancelOrderIntrabuf.SCHEMA);                         // throws NOT_AGREED if the peer can't take it
+```
+
+`Agreement.of` is a pure function of the two descriptors, so both peers reach the same verdict for every schema in
+both directions, and a mismatch fails on both sides with one table saying what is missing (a promotion, a deploy of
+the reader first, a version to reach). Its verdicts are the per-payload compatibility decision made early, and the
+tests hold the two to agreeing. With `oldestPeer` and `-Aintrabuf.history`, the processor runs the same agreement
+against every release from `oldestPeer` on and fails the build if this one couldn't talk to it.
 
 ## Fast: what gets generated
 
