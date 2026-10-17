@@ -129,11 +129,11 @@ final class BundleGenerator {
         line("}");
         line("");
         line("@Override");
-        line("protected java.util.List<?> list(" + type + " v, int member$) {");
+        line("protected java.util.List<?> list(" + type + " v$, int member$) {");
         indent++;
         line("return switch (member$) {");
         for (int i = 0; i < m.fields().size(); i++) {
-            line("    case " + i + " -> v." + m.fields().get(i).accessor() + "();");
+            line("    case " + i + " -> v$." + m.fields().get(i).accessor() + "();");
         }
         line("    default -> throw new IllegalArgumentException(\"no member \" + member$);");
         line("};");
@@ -141,12 +141,12 @@ final class BundleGenerator {
         line("}");
         line("");
         line("@Override");
-        line("protected void dispatch(Visitor visitor, int member$, Object row$) {");
+        line("protected void dispatch(Visitor visitor$, int member$, Object row$) {");
         indent++;
         line("switch (member$) {");
         for (int i = 0; i < m.fields().size(); i++) {
             FieldModel f = m.fields().get(i);
-            line("    case " + i + " -> visitor." + f.name() + "((" + row(f) + ") row$);");
+            line("    case " + i + " -> visitor$." + f.name() + "((" + row(f) + ") row$);");
         }
         line("    default -> throw new IllegalArgumentException(\"no member \" + member$);");
         line("}");

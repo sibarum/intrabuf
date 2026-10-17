@@ -35,7 +35,7 @@ final class CodecGenerator {
     private final StringBuilder sb = new StringBuilder();
     private int indent;
     private int tmp;
-    /** Whether the value emitters target the text format ({@code t}) rather than the binary one ({@code w}/{@code r}). */
+    /** Whether the value emitters target the text format ({@code t$}) rather than the binary one ({@code w$}/{@code r$}). */
     private boolean text;
 
     CodecGenerator(MessageModel m, int fingerprint, boolean snapshot, String buildVersion, boolean past) {
@@ -143,7 +143,7 @@ final class CodecGenerator {
         indent = 1;
         line("");
         if (past) {
-            pastWriter("writeBody", RT + "IbWriter w");
+            pastWriter("writeBody", RT + "IbWriter w$");
         } else {
             writeBody();
         }
@@ -152,7 +152,7 @@ final class CodecGenerator {
         text = true;
         line("");
         if (past) {
-            pastWriter("writeText", RT + "TextWriter t");
+            pastWriter("writeText", RT + "TextWriter t$");
         } else {
             writeText();
         }
@@ -171,7 +171,7 @@ final class CodecGenerator {
     /** A past version's writer: it has none, since a build writes only the current version of a schema. */
     private void pastWriter(String name, String output) {
         line("@Override");
-        line("protected void " + name + "(" + output + ", " + m.javaName() + " v) {");
+        line("protected void " + name + "(" + output + ", " + m.javaName() + " v$) {");
         line("    throw " + RT + "IntrabufException.pastVersion(NAME, MAJOR + \".\" + MINOR);");
         line("}");
     }
@@ -209,14 +209,14 @@ final class CodecGenerator {
             line("}");
             line("");
             line("@Override");
-            line("protected " + m.javaName() + " promote(Object previous) {");
-            line("    return " + m.javaName() + "." + m.promotion().method() + "((" + m.promotion().fromJavaName() + ") previous);");
+            line("protected " + m.javaName() + " promote(Object previous$) {");
+            line("    return " + m.javaName() + "." + m.promotion().method() + "((" + m.promotion().fromJavaName() + ") previous$);");
             line("}");
         }
         if (!m.fieldPromotions().isEmpty()) {
             line("");
             line("@Override");
-            line("protected " + m.javaName() + " promoteMinors(" + m.javaName() + " v, int minor) {");
+            line("protected " + m.javaName() + " promoteMinors(" + m.javaName() + " v$, int minor$) {");
             indent++;
             // One step per minor that adds promoted fields, oldest first; each sees the steps before it applied.
             java.util.TreeSet<Integer> steps = new java.util.TreeSet<>();
@@ -230,13 +230,13 @@ final class CodecGenerator {
                 for (FieldModel f : fields) {
                     String method = m.fieldPromotions().get(f.name());
                     args.append(args.isEmpty() ? "" : ", ").append(method != null && f.since() == step
-                            ? m.javaName() + "." + method + "(v)" : "v." + f.accessor() + "()");
+                            ? m.javaName() + "." + method + "(v$)" : "v$." + f.accessor() + "()");
                 }
-                line("if (minor < " + step + ") {");
-                line("    v = new " + m.javaName() + "(" + args + ");");
+                line("if (minor$ < " + step + ") {");
+                line("    v$ = new " + m.javaName() + "(" + args + ");");
                 line("}");
             }
-            line("return v;");
+            line("return v$;");
             indent--;
             line("}");
         }
@@ -293,7 +293,7 @@ final class CodecGenerator {
 
         // facts(): the role components as a Header.
         line("@Override");
-        line("public " + RT + "Header facts(" + type + " h, int size) {");
+        line("public " + RT + "Header facts(" + type + " h$, int size$) {");
         indent++;
         String fp = null;
         boolean fpBoxed = false;
@@ -301,9 +301,9 @@ final class CodecGenerator {
         for (FieldModel f : m.fields()) {
             HeaderRole role = m.roles().get(f.name());
             if (role != null) {
-                get.put(role, "h." + f.accessor() + "()");
+                get.put(role, "h$." + f.accessor() + "()");
                 if (role == HeaderRole.FINGERPRINT) {
-                    fp = "h." + f.accessor() + "()";
+                    fp = "h$." + f.accessor() + "()";
                     fpBoxed = !f.type().javaName().equals("int");
                 }
             }
@@ -314,7 +314,7 @@ final class CodecGenerator {
         line("return new " + RT + "Header(" + get.get(HeaderRole.WIRE_VERSION) + ", " + get.get(HeaderRole.SNAPSHOT) + ", "
                 + get.get(HeaderRole.COMPAT) + ", " + get.get(HeaderRole.SCHEMA_ID) + ", " + get.get(HeaderRole.MAJOR) + ", "
                 + get.get(HeaderRole.MINOR) + ", " + (fpBoxed ? "fp$ != null, fp$ == null ? 0 : fp$" : "true, " + fp)
-                + ", size);");
+                + ", size$);");
         indent--;
         line("}");
         sb.append(methods);
@@ -350,11 +350,11 @@ final class CodecGenerator {
 
     private void writeBody() {
         line("@Override");
-        line("protected void writeBody(" + RT + "IbWriter w, " + m.javaName() + " v) {");
+        line("protected void writeBody(" + RT + "IbWriter w$, " + m.javaName() + " v$) {");
         indent++;
         List<FieldModel> fields = m.fields();
         for (FieldModel f : fields) {
-            line(f.type().javaName() + " " + local(f) + " = v." + f.accessor() + "();");
+            line(f.type().javaName() + " " + local(f) + " = v$." + f.accessor() + "();");
             if (f.nonNullDeclared()) {
                 line("if (" + local(f) + " == null) throw " + RT + "IntrabufException.nullField(" + quote(path(f)) + ");");
             }
@@ -384,10 +384,10 @@ final class CodecGenerator {
             }
         }
         if (m.compat() == Compat.FULL) {
-            line("w.writeVarint(" + nb + ");");
+            line("w$.writeVarint(" + nb + ");");
         }
         for (int w = 0; w < words(bits); w++) {
-            line("w.writeBits(b$" + w + ", " + Math.min(8, nb - 8 * w) + ");");
+            line("w$.writeBits(b$" + w + ", " + Math.min(8, nb - 8 * w) + ");");
         }
         for (int i = 0; i < fields.size(); i++) {
             if (!layout.hasBody(i)) {
@@ -420,7 +420,7 @@ final class CodecGenerator {
 
     /** Writes the non-null value held in the variable {@code x}. */
     private void emitWrite(JType t, String x, String path) {
-        String w = text ? "t" : "w";
+        String w = text ? "t$" : "w$";
         switch (t.ref()) {
             case TypeRef.Scalar s -> line(w + ".write" + s.kind().methodSuffix() + "(" + x + ");");
             case TypeRef.EnumRef e -> line(w + ".writeEnum(" + x + ");");
@@ -432,7 +432,7 @@ final class CodecGenerator {
                 int n = tmp++;
                 JType k = t.arg(0);
                 JType v = t.arg(1);
-                line(text ? "t.beginMap();" : "w.writeVarint(" + x + ".size());");
+                line(text ? "t$.beginMap();" : "w$.writeVarint(" + x + ".size());");
                 line("for (java.util.Map.Entry<" + k.javaName() + ", " + v.javaName() + "> e$" + n + " : " + x + ".entrySet()) {");
                 indent++;
                 line(k.javaName() + " k$" + n + " = e$" + n + ".getKey();");
@@ -443,7 +443,7 @@ final class CodecGenerator {
                 indent--;
                 line("}");
                 if (text) {
-                    line("t.endMap();");
+                    line("t$.endMap();");
                 }
             }
             case TypeRef.OptionalOf o -> throw new IllegalStateException("nested optional");
@@ -453,7 +453,7 @@ final class CodecGenerator {
     private void writeCollection(JType t, String x, String path) {
         int n = tmp++;
         JType e = t.arg(0);
-        line(text ? "t.beginList();" : "w.writeVarint(" + x + ".size());");
+        line(text ? "t$.beginList();" : "w$.writeVarint(" + x + ".size());");
         line("for (" + e.javaName() + " e$" + n + " : " + x + ") {");
         indent++;
         line("if (e$" + n + " == null) throw " + RT + "IntrabufException.nullElement(" + quote(path) + ");");
@@ -461,7 +461,7 @@ final class CodecGenerator {
         indent--;
         line("}");
         if (text) {
-            line("t.endList();");
+            line("t$.endList();");
         }
     }
 
@@ -474,13 +474,13 @@ final class CodecGenerator {
 
     private void writeText() {
         line("@Override");
-        line("protected void writeText(" + RT + "TextWriter t, " + m.javaName() + " v) {");
+        line("protected void writeText(" + RT + "TextWriter t$, " + m.javaName() + " v$) {");
         indent++;
         for (FieldModel f : m.fields()) {
             if (!textCell(f)) {
                 continue;
             }
-            line(f.type().javaName() + " " + local(f) + " = v." + f.accessor() + "();");
+            line(f.type().javaName() + " " + local(f) + " = v$." + f.accessor() + "();");
             if (f.nonNullDeclared()) {
                 line("if (" + local(f) + " == null) throw " + RT + "IntrabufException.nullField(" + quote(path(f)) + ");");
             }
@@ -499,11 +499,11 @@ final class CodecGenerator {
                 emitWrite(inner, o, path(f));
                 indent--;
                 line("} else {");
-                line("    t.writeNull();");
+                line("    t$.writeNull();");
                 line("}");
             } else if (f.nullable()) {
                 line("if (" + x + " == null) {");
-                line("    t.writeNull();");
+                line("    t$.writeNull();");
                 line("} else {");
                 indent++;
                 emitWrite(f.type(), x, path(f));
@@ -519,7 +519,7 @@ final class CodecGenerator {
 
     private void readText() {
         line("@Override");
-        line("protected " + m.javaName() + " readText(" + RT + "TextReader t, int minor) {");
+        line("protected " + m.javaName() + " readText(" + RT + "TextReader t$, int minor$) {");
         indent++;
         for (FieldModel f : m.fields()) {
             readTextField(f, m.compat() != Compat.STRICT && f.since() > 0);
@@ -532,9 +532,9 @@ final class CodecGenerator {
     /** A header's own components come from its row; its roles from the document's first line. */
     private void readHeaderText() {
         line("@Override");
-        line("protected " + m.javaName() + " readText(" + RT + "TextReader t) {");
+        line("protected " + m.javaName() + " readText(" + RT + "TextReader t$) {");
         indent++;
-        line(RT + "Header f$ = t.facts();");
+        line(RT + "Header f$ = t$.facts();");
         for (FieldModel f : m.fields()) {
             HeaderRole role = m.roles().get(f.name());
             if (role == null) {
@@ -557,18 +557,18 @@ final class CodecGenerator {
         }
         line(f.type().javaName() + " " + x + " = " + defaultValue(f) + ";");
         if (guarded) {
-            line("if (minor >= " + f.since() + ") {");
+            line("if (minor$ >= " + f.since() + ") {");
             indent++;
         }
         if (optional) {
-            line("if (!t.readNull()) {");
+            line("if (!t$.readNull()) {");
             indent++;
             String o = readInto(f.type().arg(0), "o$" + (tmp++));
             line(x + " = java.util.Optional.of(" + o + ");");
             indent--;
             line("}");
         } else if (f.nullable()) {
-            line("if (!t.readNull()) {");
+            line("if (!t$.readNull()) {");
             indent++;
             emitRead(f.type(), x);
             indent--;
@@ -604,7 +604,7 @@ final class CodecGenerator {
 
     private void readBody() {
         line("@Override");
-        line("protected " + m.javaName() + " readBody(" + RT + "IbReader r, int minor) {");
+        line("protected " + m.javaName() + " readBody(" + RT + "IbReader r$, int minor$) {");
         indent++;
         List<FieldModel> fields = m.fields();
         int bits = layout.bitCount(m.minor());
@@ -616,18 +616,18 @@ final class CodecGenerator {
             }
             case BACKWARD -> {
                 if (bits > 0) {
-                    line("int nb$ = BITSET_BYTES[minor];");
+                    line("int nb$ = BITSET_BYTES[minor$];");
                 }
             }
-            case FULL -> line("int nb$ = r.readCount();");
+            case FULL -> line("int nb$ = r$.readCount();");
         }
         if (bits > 0) {
-            line("int at$ = r.beginBits(nb$);");
+            line("int at$ = r$.beginBits(nb$);");
             for (int w = 0; w < words(bits); w++) {
-                line("long b$" + w + " = r.bitsWord(at$, nb$, " + w + ");");
+                line("long b$" + w + " = r$.bitsWord(at$, nb$, " + w + ");");
             }
         } else if (m.compat() == Compat.FULL) {
-            line("r.skip(nb$); // bits from a newer writer");
+            line("r$.skip(nb$); // bits from a newer writer");
         }
         for (int i = 0; i < fields.size(); i++) {
             FieldModel f = fields.get(i);
@@ -648,7 +648,7 @@ final class CodecGenerator {
             }
             line(f.type().javaName() + " " + x + " = " + defaultValue(f) + ";");
             if (guarded) {
-                line("if (minor >= " + f.since() + ") {");
+                line("if (minor$ >= " + f.since() + ") {");
                 indent++;
             }
             if (vb >= 0) {
@@ -692,13 +692,13 @@ final class CodecGenerator {
 
     /** An expression reading a value of {@code t}, or null if it needs statements (collections). */
     private String readExpr(JType t) {
-        String r = text ? "t" : "r";
+        String r = text ? "t$" : "r$";
         return switch (t.ref()) {
             case TypeRef.Scalar s -> r + ".read" + s.kind().methodSuffix() + "()";
             case TypeRef.EnumRef e -> {
                 String table = enumFields.computeIfAbsent(t.className(), k -> "ENUM$" + enumFields.size());
-                yield text ? "t.readEnum(" + table + ", " + quote(e.name()) + ")"
-                        : table + "[r.readEnum(" + table + ".length, " + quote(e.name()) + ")]";
+                yield text ? "t$.readEnum(" + table + ", " + quote(e.name()) + ")"
+                        : table + "[r$.readEnum(" + table + ".length, " + quote(e.name()) + ")]";
             }
             case TypeRef.MessageRef msg -> t.className() + ".CODEC." + (text ? "readTextNested" : "readNested") + "(" + r + ")";
             default -> null;
@@ -719,8 +719,8 @@ final class CodecGenerator {
         indent++;
         boolean isMap = t.ref() instanceof TypeRef.MapOf;
         // A text list's count is of elements already parsed, so it needs no capacity cap.
-        String capacity = text ? count : "r.capacityHint(" + count + ")";
-        line("int " + count + " = " + (text ? isMap ? "t.beginMap()" : "t.beginList()" : "r.readCount()") + ";");
+        String capacity = text ? count : "r$.capacityHint(" + count + ")";
+        line("int " + count + " = " + (text ? isMap ? "t$.beginMap()" : "t$.beginList()" : "r$.readCount()") + ";");
         switch (t.ref()) {
             case TypeRef.ListOf l -> line("java.util.ArrayList<" + t.arg(0).javaName() + "> " + coll
                     + " = new java.util.ArrayList<>(" + capacity + ");");
@@ -742,7 +742,7 @@ final class CodecGenerator {
         indent--;
         line("}");
         if (text) {
-            line(isMap ? "t.endMap();" : "t.endList();");
+            line(isMap ? "t$.endMap();" : "t$.endList();");
         }
         line(target + " = " + coll + ";");
         indent--;

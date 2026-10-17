@@ -91,6 +91,25 @@ class DiagnosticsTest {
         assertTrue(Files.exists(r.out().resolve("META-INF/intrabuf/t.json")), "manifest written");
     }
 
+    /** Generated code names other codecs by package, so no generated parameter or local may shadow one. */
+    @Test
+    void nestedCodecsCompileInPackagesNamedLikeGeneratedLocals() {
+        for (String pkg : List.of("t", "w", "r", "v", "h", "minor", "previous", "visitor")) {
+            Result r = compile(HEADER.replace("package t;", "package " + pkg + ";") + """
+                    @IntrabufMessage(compat = Compat.BACKWARD) record Ad(int id) {}
+                    @IntrabufMessage(compat = Compat.BACKWARD, minor = 1)
+                    record Out(Ad one, List<Ad> list, Map<String, Ad> map, @Field(since = 1) Optional<Ad> later) {}
+                    @IntrabufMessage(name = "x.A", major = 1, compat = Compat.BACKWARD) record A1(Ad ad) {}
+                    @IntrabufMessage(name = "x.A", major = 2, minor = 1, compat = Compat.BACKWARD, oldest = "1.0")
+                    record A2(Ad ad, @Field(since = 1, nonNull = true) Ad more) {
+                      @Promote static A2 from(A1 old) { return new A2(old.ad(), null); }
+                      @Promote(field = "more") static Ad more(A2 older) { return older.ad(); } }
+                    @IntrabufBundle record B(List<Ad> ads) {}
+                    """);
+            assertTrue(r.success(), "package " + pkg + ":\n" + r.diagnostics());
+        }
+    }
+
     @Test
     void onlyRecords() {
         fails("@IntrabufMessage class T {}", "applies only to records");
@@ -307,12 +326,9 @@ class DiagnosticsTest {
 
     // ---- history ------------------------------------------------------------------------------------------------
 
-    /** History cases nest messages, so they live in a package no generated local shadows. */
-    private static final String HIST = HEADER.replace("package t;", "package hist;");
-
     /** Compiles {@code source} as release {@code version} and freezes its manifest into {@code history}. */
     private static void release(String source, String version, Path history) {
-        Result r = compile(HIST + source, version, null);
+        Result r = compile(HEADER + source, version, null);
         assertTrue(r.success(), r.diagnostics());
         try {
             Files.createDirectories(history);
@@ -323,7 +339,7 @@ class DiagnosticsTest {
     }
 
     private static Result against(Path history, String source) {
-        return compile(HIST + source, "9.0.0", history);
+        return compile(HEADER + source, "9.0.0", history);
     }
 
     private static void failsAgainst(Path history, String source, String expected) {
@@ -353,7 +369,7 @@ class DiagnosticsTest {
         assertTrue(same.success(), same.diagnostics());
 
         failsAgainst(h, ADDRESS + CUSTOMER.replace("String name", "int name"),
-                "t.C v1.0 was released in 1.0.0, and a released version never changes, but hist.C differs:"
+                "t.C v1.0 was released in 1.0.0, and a released version never changes, but t.C differs:"
                         + " field 1 was 'name string?' and is now 'name int32'");
         failsAgainst(h, ADDRESS + CUSTOMER.replace(", Ad home)", ", Ad home, String email)"),
                 "field 3 was absent and is now 'email string?'");
@@ -383,7 +399,7 @@ class DiagnosticsTest {
         String outer = "@IntrabufMessage(name = \"t.Out\") record Out(In in) {}\n";
         release(inner + outer, "1.0.0", h);
         failsAgainst(h, inner.replace("record In(int a)", "record In(int a, int b)").replace("name = \"t.In\"", "name = \"t.In\", minor = 1")
-                + outer, "t.Out v1.0 was released in 1.0.0, and a released version never changes, but hist.Out differs: its fingerprint was");
+                + outer, "t.Out v1.0 was released in 1.0.0, and a released version never changes, but t.Out differs: its fingerprint was");
     }
 
     @Test
@@ -400,7 +416,7 @@ class DiagnosticsTest {
         assertTrue(ok.success(), ok.diagnostics());
 
         failsAgainst(h, "@IntrabufMessage(name = \"t.A\", compat = Compat.BACKWARD) record A1(String name) {}\n" + current,
-                "hist.A1 is v1.0, but the last release of t.A major 1 is v1.1 (in 1.1.0)");
+                "t.A1 is v1.0, but the last release of t.A major 1 is v1.1 (in 1.1.0)");
         failsAgainst(h, "@IntrabufMessage(name = \"t.A\", minor = 1, compat = Compat.BACKWARD)"
                         + " record A1(String name, @Field(since = 1) Integer email) {}\n" + current,
                 "t.A v1.1 was released in 1.1.0, and a released version never changes");
@@ -411,7 +427,7 @@ class DiagnosticsTest {
         Path h = newHistory();
         release("@IntrabufMessage(name = \"t.Other\") record O(int x) {}", "1.0.0", h);
         failsAgainst(h, ACCOUNT_V1 + ACCOUNT_V2.replace("major = 2,", "major = 2, oldest = \"1.0\","),
-                "hist.A1 is a past version of t.A, but no release in history has major 1: a past version is one that shipped");
+                "t.A1 is a past version of t.A, but no release in history has major 1: a past version is one that shipped");
     }
 
     @Test
@@ -424,7 +440,7 @@ class DiagnosticsTest {
         failsAgainst(h, "@IntrabufMessage record T(int a) {}", "holds release 1.0.0; name it 1.0.0.json");
 
         Path snap = newHistory();
-        Result r = compile(HIST + "@IntrabufMessage record T(int a) {}", "1.1.0-SNAPSHOT", null);
+        Result r = compile(HEADER + "@IntrabufMessage record T(int a) {}", "1.1.0-SNAPSHOT", null);
         Files.createDirectories(snap);
         Files.copy(r.out().resolve("META-INF/intrabuf/t.json"), snap.resolve("1.1.0-SNAPSHOT.json"));
         failsAgainst(snap, "@IntrabufMessage record T(int a) {}", "is from a snapshot build; only releases are history");
