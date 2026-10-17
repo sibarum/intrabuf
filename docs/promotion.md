@@ -1,10 +1,11 @@
 # Intrabuf promotions and endpoints
 
 > **Status: partly implemented.** What exists is [promotions](#two-kinds-of-step): `@Promote`, `oldest`, past
-> versions and the chain the processor checks, and the [split of the major mismatch](#reading-a-payload) into
-> `NEWER_MAJOR` and `BELOW_OLDEST`. Still a proposal: [history](#history-what-the-build-knows-about-the-past),
-> [endpoints and the handshake](#endpoints-and-the-handshake), and the generated `promote` helper for nested past
-> records. Names in those parts are placeholders to argue about.
+> versions and the chain the processor checks; the [split of the major mismatch](#reading-a-payload) into
+> `NEWER_MAJOR` and `BELOW_OLDEST`; and [history](#history-what-the-build-knows-about-the-past): `intrabuf freeze`
+> and the processor's checks of released versions. Still a proposal: [endpoints and the
+> handshake](#endpoints-and-the-handshake), their check against history, and the generated `promote` helper for
+> nested past records. Names in those parts are placeholders to argue about.
 
 Without promotions a reader knows one version of each schema, and the compat mode says which other versions it puts
 up with. Older minors are read by giving new fields their defaults. Newer minors, in FULL, are read by ignoring what
@@ -135,7 +136,8 @@ When major 3 arrives, `Customer` is renamed `CustomerV2`, keeps its `@Promote fr
 
 ## History: what the build knows about the past
 
-The manifest a release build writes is committed, unchanged, to a history directory:
+The manifest a release build writes is committed, unchanged, to a history directory, one file per release named
+after its build version:
 
 ```
 src/main/intrabuf/history/
@@ -144,20 +146,39 @@ src/main/intrabuf/history/
     1.4.0.json
 ```
 
-`intrabuf freeze` copies the module's manifest there at release time. The processor reads it with
-`-Aintrabuf.history=<dir>`, and checks:
+`intrabuf freeze -m <manifest|jar|dir> <history-dir>` puts it there at release time. It refuses a snapshot build's
+manifest, and a release is frozen once: freezing the same manifest again does nothing, and a different manifest under
+a version already frozen is an error. A history directory belongs to one module, and freeze refuses another module's
+manifest.
 
-* **A released version never changes.** If the current record, or a past one, claims a version that is in history,
-  its fingerprint must equal the released one (`RELEASED_VERSION_CHANGED`). This catches an unbumped edit to a
-  BACKWARD or FULL schema, which the wire can't: release headers in those modes carry no fingerprint.
-* **A past record is the one that shipped.** `CustomerV1` must match the last released 1.x exactly. You can't invent a
-  past, or edit one.
-* **The chain reaches `oldest`.** Every version from `oldest` to now that history records has a path to the current
-  version.
-* **Endpoints agree with every release in their window** (below).
+The processor reads the directory with `-Aintrabuf.history=<dir>`. Give it an absolute path
+(`${project.basedir}/src/main/intrabuf/history`), since javac resolves a relative one against wherever the build
+was started. Every `*.json` directly in it must be a release manifest of this module (`-Aintrabuf.module`), named
+`<buildVersion>.json`, and a directory that doesn't exist is an error rather than an empty past. Then:
+
+* **A released version never changes.** A record that claims a version some release shipped must be that version.
+  For a STRICT message the whole fingerprint is compared, because its identity covers everything it reaches. A
+  BACKWARD or FULL message is compared by its own compat mode and fields, in order, with their types, nullability
+  and `since`. Its nested messages carry their own versions and are checked on their own, so `Address` gaining a
+  minor doesn't change `Customer 1.2`. The error names the field:
+
+  ```
+  error: example.Customer v1.2 was released in 1.4.0, and a released version never changes, but
+         example.Customer differs: field 3 was 'email string?' and is now 'email int32'.
+         Bump the minor for an added field, or the major for anything else
+  ```
+
+  This catches an unbumped edit to a BACKWARD or FULL schema, which the wire can't: release headers in those modes
+  carry no fingerprint. Two releases in history that disagree about one version are an error too.
+* **A past record is the one that shipped.** A record a promotion takes must be the last release of its major: its
+  version is the highest minor history has for that major, and the check above holds it to that release exactly.
+  You can't invent a past, or edit one. Since it's the last minor, it reads every released minor of its major, so
+  the chain from `oldest` covers every release in between.
 
 Snapshot builds are never in history. Between releases, history is the only past there is, which is what a
-development build's moving schemas need.
+development build's moving schemas need. Without `-Aintrabuf.history`, none of this is checked.
+
+Still to come here: **endpoints agree with every release in their window** (below).
 
 ## Reading a payload
 

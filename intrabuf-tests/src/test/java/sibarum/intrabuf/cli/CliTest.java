@@ -179,6 +179,54 @@ class CliTest {
                 r.out().replace(System.lineSeparator(), "\n"));
     }
 
+    // ---- freeze ------------------------------------------------------------------------------------------------
+
+    /** The example's manifest as release {@code version} of module {@code module}, written to a file. */
+    private Path releaseManifest(String module, String version) throws IOException {
+        sibarum.intrabuf.schema.Manifest m;
+        try (var in = CliTest.class.getClassLoader().getResourceAsStream("META-INF/intrabuf/intrabuf-example.json")) {
+            m = sibarum.intrabuf.schema.ManifestJson.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        var release = new sibarum.intrabuf.schema.Manifest(m.format(), m.wireVersion(), module, version, false,
+                m.messages(), m.enums(), m.headers());
+        Path p = dir.resolve(module + "-" + version + "-" + System.nanoTime() + ".json");
+        Files.writeString(p, sibarum.intrabuf.schema.ManifestJson.write(release), StandardCharsets.UTF_8);
+        return p;
+    }
+
+    @Test
+    void freezeCopiesAReleaseIntoHistoryOnce() throws IOException {
+        Path history = dir.resolve("src/main/intrabuf/history");
+        Path release = releaseManifest("intrabuf-example", "1.0.0");
+        Result r = run(new byte[0], "freeze", "-m", release.toString(), history.toString());
+        assertEquals(0, r.code(), r.err());
+        assertTrue(r.out().contains("froze intrabuf-example 1.0.0"), r.out());
+        assertEquals(Files.readString(release), Files.readString(history.resolve("1.0.0.json")));
+
+        r = run(new byte[0], "freeze", "-m", release.toString(), history.toString());
+        assertEquals(0, r.code(), r.err());
+        assertTrue(r.out().contains("already frozen"), r.out());
+
+        Path changed = releaseManifest("intrabuf-example", "1.0.0");
+        Files.writeString(changed, Files.readString(changed).replace("\"example.Customer\"", "\"example.Client\""));
+        r = run(new byte[0], "freeze", "-m", changed.toString(), history.toString());
+        assertEquals(1, r.code());
+        assertTrue(r.err().contains("a release is frozen once"), r.err());
+
+        r = run(new byte[0], "freeze", "-m", releaseManifest("other-module", "2.0.0").toString(), history.toString());
+        assertEquals(1, r.code());
+        assertTrue(r.err().contains("is the history of module 'intrabuf-example'"), r.err());
+    }
+
+    @Test
+    void freezeRefusesSnapshots() {
+        Result r = run(new byte[0], "freeze", "-m", exampleManifests(), dir.resolve("history").toString());
+        assertEquals(1, r.code());
+        assertTrue(r.err().contains("is from a snapshot build"), r.err());
+        assertTrue(!Files.exists(dir.resolve("history").resolve("0.1.1-SNAPSHOT.json")));
+        assertEquals(2, run(new byte[0], "freeze", "-m", exampleManifests()).code());
+    }
+
     @Test
     void usageErrorsExitWith2() {
         assertEquals(2, run(new byte[0]).code());

@@ -14,12 +14,15 @@ import sibarum.intrabuf.schema.EnumDef;
 import sibarum.intrabuf.schema.FieldDef;
 import sibarum.intrabuf.schema.HeaderDef;
 import sibarum.intrabuf.schema.Json;
+import sibarum.intrabuf.schema.Manifest;
+import sibarum.intrabuf.schema.ManifestJson;
 import sibarum.intrabuf.schema.MessageDef;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -50,6 +53,10 @@ public final class IntrabufCli {
                       List the schemas and header formats the manifests describe.
               schema  -m <manifest>... <name>
                       Show every loaded version of one schema (or a header format), field by field.
+              freeze  -m <manifest> <history-dir>
+                      Copy a release build's manifest into the module's history as <version>.json, for
+                      -Aintrabuf.history to check later builds against. Refuses snapshots, and a
+                      different manifest under a version already frozen.
 
             <payload> is a file, or '-' for stdin, in either format (binary, or text starting '#intrabuf').
             With --hex or --base64 it is a binary payload itself, as text.
@@ -104,6 +111,7 @@ public final class IntrabufCli {
                 case "header" -> header(o);
                 case "schemas" -> schemas(o);
                 case "schema" -> schema(o);
+                case "freeze" -> freeze(o);
                 default -> throw new UsageException("unknown command '" + args[0] + "'");
             };
         } catch (UsageException e) {
@@ -304,6 +312,62 @@ public final class IntrabufCli {
         HeaderDef format = headerFormat(o, set);
         DynamicDecoder.Decoded d = new DynamicDecoder(set).decode(payload(o), format);
         out.print(Render.text(d, set, format));
+        return 0;
+    }
+
+    /**
+     * Copies one release's manifest into a module's history directory as {@code <buildVersion>.json}. A release is
+     * frozen once: the same manifest again is a no-op, a different one under the same version is an error.
+     */
+    private int freeze(Options o) throws IOException, UsageException {
+        if (o.positional.size() != 1) {
+            throw new UsageException("freeze takes one history directory, got " + o.positional.size());
+        }
+        if (o.manifests.isEmpty()) {
+            throw new UsageException("freeze needs the release's manifest: -m <manifest|jar|dir>");
+        }
+        List<ManifestLoader.Loaded> loaded = new ArrayList<>();
+        for (Path p : o.manifests) {
+            loaded.addAll(ManifestLoader.load(p));
+        }
+        if (loaded.size() != 1) {
+            throw new UsageException("freeze takes one module's manifest; found " + loaded.size() + ": "
+                    + loaded.stream().map(ManifestLoader.Loaded::source).collect(Collectors.joining(", ")));
+        }
+        Manifest m = loaded.getFirst().manifest();
+        if (m.snapshot()) {
+            throw new IntrabufException(loaded.getFirst().source() + " is from a snapshot build (" + m.buildVersion()
+                    + "); only releases go in history");
+        }
+        Path dir = Path.of(o.positional.getFirst());
+        Files.createDirectories(dir);
+        try (var files = Files.list(dir)) {
+            for (Path f : files.filter(f -> f.getFileName().toString().endsWith(".json")).toList()) {
+                String module;
+                try {
+                    module = ManifestJson.parse(Files.readString(f, StandardCharsets.UTF_8)).module();
+                } catch (RuntimeException e) {
+                    throw new IntrabufException(f + " is in the history directory but is not a manifest: " + e.getMessage());
+                }
+                if (!module.equals(m.module())) {
+                    throw new IntrabufException(dir + " is the history of module '" + module + "' (" + f.getFileName()
+                            + "); this manifest is module '" + m.module() + "'");
+                }
+            }
+        }
+        Path target = dir.resolve(m.buildVersion() + ".json");
+        String json = ManifestJson.write(m);
+        if (Files.exists(target)) {
+            if (Files.readString(target, StandardCharsets.UTF_8).equals(json)) {
+                out.println(m.module() + " " + m.buildVersion() + " is already frozen in " + target);
+                return 0;
+            }
+            throw new IntrabufException(target + " already holds a different " + m.module() + " " + m.buildVersion()
+                    + "; a release is frozen once");
+        }
+        Files.writeString(target, json, StandardCharsets.UTF_8);
+        out.println("froze " + m.module() + " " + m.buildVersion() + " (" + m.messages().size() + " message schemas) into "
+                + target);
         return 0;
     }
 

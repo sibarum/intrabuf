@@ -41,6 +41,9 @@ import java.util.Set;
  *   <li>{@code intrabuf.snapshot}: {@code true}/{@code false}, overriding what the version implies.</li>
  *   <li>{@code intrabuf.module}: the manifest's name, {@code META-INF/intrabuf/<module>.json}. Set it to something
  *       unique per artifact so manifests from several jars can sit on one classpath.</li>
+ *   <li>{@code intrabuf.history}: a directory of this module's released manifests, one {@code <buildVersion>.json}
+ *       per release ({@code intrabuf freeze} puts them there). Released versions are then checked never to change,
+ *       and past versions to be the last release of their major.</li>
  * </ul>
  * Without either version option the build is treated as a snapshot: payloads then carry a fingerprint and are
  * rejected by any reader whose schema differs, which is the safe failure.
@@ -50,11 +53,14 @@ public final class IntrabufProcessor extends AbstractProcessor {
     static final String OPT_BUILD_VERSION = "intrabuf.buildVersion";
     static final String OPT_SNAPSHOT = "intrabuf.snapshot";
     static final String OPT_MODULE = "intrabuf.module";
+    static final String OPT_HISTORY = "intrabuf.history";
 
     private Models models;
     private String buildVersion;
     private boolean snapshot;
     private String module;
+    /** The released manifests, if {@code intrabuf.history} is set; loaded with the first schemas. */
+    private History history;
     private final List<MessageModel> generated = new ArrayList<>();
 
     @Override
@@ -65,7 +71,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
 
     @Override
     public Set<String> getSupportedOptions() {
-        return Set.of(OPT_BUILD_VERSION, OPT_SNAPSHOT, OPT_MODULE);
+        return Set.of(OPT_BUILD_VERSION, OPT_SNAPSHOT, OPT_MODULE, OPT_HISTORY);
     }
 
     @Override
@@ -113,7 +119,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
                 built.add(m);
             }
         }
-        if (models.hasErrors() || !models.link()) {
+        if (models.hasErrors() || !models.link() || !checkHistory()) {
             return true;
         }
         for (MessageModel m : built) {
@@ -121,6 +127,18 @@ public final class IntrabufProcessor extends AbstractProcessor {
             generated.add(m);
         }
         return true;
+    }
+
+    /** Checks this round's models against the released manifests, if there are any. */
+    private boolean checkHistory() {
+        String dir = processingEnv.getOptions().get(OPT_HISTORY);
+        if (dir == null) {
+            return true;
+        }
+        if (history == null) {
+            history = History.load(java.nio.file.Path.of(dir), module, processingEnv.getMessager());
+        }
+        return history.check(models);
     }
 
     private void write(MessageModel m) {

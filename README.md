@@ -108,6 +108,10 @@ this stack), not from where a row falls in the stream. The design is in [docs/bu
   unset, the build is treated as a snapshot, which is the safe failure mode.
 * `intrabuf.snapshot`: `true` or `false`, overriding what the version implies.
 * `intrabuf.module`: names the manifest, `META-INF/intrabuf/<module>.json`. Make it unique per artifact.
+* `intrabuf.history`: the module's released manifests, one `<buildVersion>.json` per release, put there by
+  `intrabuf freeze`. Use an absolute path, `${project.basedir}/src/main/intrabuf/history`. The processor then fails
+  the build if a released version has changed, or a past version isn't the last release of its major. See
+  [history](docs/promotion.md#history-what-the-build-knows-about-the-past).
 
 Build and test everything with `mvn install`. Build the native CLI with `mvn -Pnative -DskipTests package` (it
 lands at `intrabuf-cli/target/intrabuf[.exe]`).
@@ -218,7 +222,8 @@ public record Customer(long id, String first, String last, @Field(since = 1, non
 current version takes the usual path, untouched. The processor checks the chain at compile time: a missing
 promotion, an `oldest` the chain doesn't reach, a promotion nothing reaches, or a past record held by a current
 message is an error. Promotions are one way and adjacent (major *n* from *n − 1*), and STRICT schemas have none.
-The design, including the history and endpoint handshake still to come, is in [docs/promotion.md](docs/promotion.md).
+With `-Aintrabuf.history` the processor also holds each past record to the release it stands for. The design,
+including the endpoint handshake still to come, is in [docs/promotion.md](docs/promotion.md).
 
 ## Fast: what gets generated
 
@@ -281,6 +286,7 @@ example.Customer @minor 2 {
 * `header <payload>`: the header alone. No manifest needed for the built-in header.
 * `--header <name>` (on `decode` and `header`): the payload is a frame with an application header.
 * `schemas -m ...` and `schema -m ... <name>`: what the manifests describe, header formats included.
+* `freeze -m <manifest> <history-dir>`: copy a release's manifest into the module's history, once.
 
 `-m` takes a manifest `.json`, a jar, or a directory (searched for `META-INF/intrabuf/*.json`). It is repeatable, so
 load several releases' manifests and the CLI will pick the version each payload was written with.
