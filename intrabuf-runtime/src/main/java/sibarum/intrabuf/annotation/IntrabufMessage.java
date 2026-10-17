@@ -42,4 +42,11 @@ public @interface IntrabufMessage {
     int minor() default 0;
 
     Compat compat() default Compat.STRICT;
+
+    /**
+     * The oldest version this reader reads, as {@code "major.minor"}. Empty (the default) is minor 0 of this major.
+     * An older major is read through {@link Promote} methods, one per major from there to this one; the processor
+     * fails the build if one is missing. A STRICT schema reads only its own version.
+     */
+    String oldest() default "";
 }

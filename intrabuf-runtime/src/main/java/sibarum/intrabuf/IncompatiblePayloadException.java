@@ -13,8 +13,15 @@ public final class IncompatiblePayloadException extends IntrabufException {
         UNSUPPORTED_WIRE_VERSION,
         /** A payload of a different schema. */
         SCHEMA_MISMATCH,
-        /** Same schema, different major version. Never decodable. */
+        /**
+         * A nested table, a bundle member, or a payload matched against loaded manifests is of a major this reader
+         * has no codec for. (A payload's own major is {@link #NEWER_MAJOR} or {@link #BELOW_OLDEST}.)
+         */
         MAJOR_MISMATCH,
+        /** The payload is from a newer major than the reader. Majors never demote, so this is never decodable. */
+        NEWER_MAJOR,
+        /** The payload is older than the reader's oldest version: no declared promotion reaches it. */
+        BELOW_OLDEST,
         /** Writer and reader disagree on the schema's compatibility mode. */
         COMPAT_MISMATCH,
         /** STRICT: same major, different minor. */

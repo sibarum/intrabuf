@@ -225,6 +225,79 @@ class DiagnosticsTest {
         fails("@IntrabufMessage(id = {1, 2}) record A(int x) {}", "id takes one value");
     }
 
+    private static final String ACCOUNT_V1 =
+            "@IntrabufMessage(name = \"t.A\", major = 1, compat = Compat.BACKWARD) record A1(String name) {}\n";
+    private static final String ACCOUNT_V2 =
+            "@IntrabufMessage(name = \"t.A\", major = 2, compat = Compat.BACKWARD) record A2(String name) {\n"
+                    + "  @Promote static A2 from(A1 old) { return new A2(old.name()); } }\n";
+
+    @Test
+    void validPromotionChainCompiles() {
+        Result r = compile(HEADER + ACCOUNT_V1 + ACCOUNT_V2
+                + "@IntrabufMessage(name = \"t.A\", major = 3, minor = 1, compat = Compat.BACKWARD, oldest = \"1.0\")\n"
+                + "record A3(String name, @Field(since = 1, nonNull = true) java.time.Instant at) {\n"
+                + "  @Promote static A3 from(A2 old) { return A3Intrabuf.at3_0(old.name()); }\n"
+                + "  @Promote(field = \"at\") static java.time.Instant at(A3 older) { return java.time.Instant.EPOCH; } }\n");
+        assertTrue(r.success(), r.diagnostics());
+    }
+
+    @Test
+    void theChainMustReachTheOldest() {
+        fails(ACCOUNT_V1 + "@IntrabufMessage(name = \"t.A\", major = 2, compat = Compat.BACKWARD) record A2(String name) {}\n"
+                        + "@IntrabufMessage(name = \"t.A\", major = 3, compat = Compat.BACKWARD, oldest = \"1.0\") record A3(String name) {\n"
+                        + "  @Promote static A3 from(A2 old) { return new A3(old.name()); } }\n",
+                "declares oldest = \"1.0\", but nothing promotes major 1 to major 2. Add to t.A2: @Promote static A2 from(");
+        fails("@IntrabufMessage(name = \"t.A\", major = 2, compat = Compat.BACKWARD, oldest = \"1.0\") record A2(String name) {}",
+                "nothing promotes major 1 to major 2");
+        fails(ACCOUNT_V1 + "@IntrabufMessage(name = \"t.A\", major = 2, compat = Compat.BACKWARD, oldest = \"1.3\") record A2(String name) {\n"
+                + "  @Promote static A2 from(A1 old) { return new A2(old.name()); } }\n", "newer than t.A1 (v1.0)");
+    }
+
+    @Test
+    void aPromotionMustBeReachable() {
+        fails(ACCOUNT_V1 + ACCOUNT_V2, "so it never runs; declare oldest = \"1.0\"");
+    }
+
+    @Test
+    void promotionSignatures() {
+        fails(ACCOUNT_V1 + "@IntrabufMessage(name = \"t.A\", major = 3, compat = Compat.BACKWARD) record A3(String name) {\n"
+                + "  @Promote static A3 from(A1 old) { return null; } }", "promotions are adjacent, so it must take major 2");
+        fails("@IntrabufMessage(name = \"t.B\", compat = Compat.BACKWARD) record B(String name) {}\n"
+                + "@IntrabufMessage(name = \"t.A\", major = 2, compat = Compat.BACKWARD) record A2(String name) {\n"
+                + "  @Promote static A2 from(B old) { return null; } }", "which is schema 't.B', not 't.A'");
+        fails(ACCOUNT_V1 + "@IntrabufMessage(name = \"t.A\", major = 2, compat = Compat.BACKWARD) record A2(String name) {\n"
+                + "  @Promote A2 from(A1 old) { return null; } }", "must be static and not private");
+        fails(ACCOUNT_V1 + "@IntrabufMessage(name = \"t.A\", major = 2) record A2(String name) {\n"
+                + "  @Promote static A2 from(A1 old) { return null; } }", "a STRICT schema reads only its own version");
+        fails("@IntrabufMessage(compat = Compat.BACKWARD, minor = 1) record T(int a, @Field(since = 1) int b) {\n"
+                + "  @Promote(field = \"b\") static long b(T older) { return 0; } }", "must return int, the type of b");
+        fails("@IntrabufMessage(compat = Compat.BACKWARD, minor = 1) record T(int a, @Field(since = 1) int b) {\n"
+                + "  @Promote(field = \"a\") static int a(T older) { return 0; } }", "it is in minor 0, which every payload has");
+        fails("@IntrabufMessage(compat = Compat.BACKWARD, minor = 1) record T(int a) {\n"
+                + "  @Promote(field = \"c\") static int c(T older) { return 0; } }", "has no component named 'c'");
+    }
+
+    @Test
+    void oldestIsAVersionNoNewerThanTheRecord() {
+        fails("@IntrabufMessage(compat = Compat.BACKWARD, oldest = \"1\") record T(int a) {}", "must be \"major.minor\"");
+        fails("@IntrabufMessage(compat = Compat.BACKWARD, oldest = \"1.2\") record T(int a) {}", "is newer than T itself (v1.0)");
+        fails("@IntrabufMessage(minor = 2, oldest = \"1.1\") record T(int a) {}", "its oldest can only be \"1.2\"");
+    }
+
+    @Test
+    void aNonNullFieldWithoutADefaultNeedsAPromotion() {
+        fails("@IntrabufMessage(name = \"t.L\", compat = Compat.FULL) record L(String s) {}\n"
+                        + "@IntrabufMessage(compat = Compat.FULL, minor = 1) record T(int a, @Field(since = 1, nonNull = true) L l) {}",
+                "or compute it with @Promote(field = \"l\")");
+    }
+
+    @Test
+    void onlyPastVersionsHoldPastVersions() {
+        fails(ACCOUNT_V1 + ACCOUNT_V2.replace("major = 2,", "major = 2, oldest = \"1.0\",")
+                        + "@IntrabufMessage(name = \"t.H\", compat = Compat.BACKWARD) record H(A1 a) {}",
+                "H.a holds t.A1, a past version of t.A");
+    }
+
     @Test
     void sinceOnStrictWarns() {
         Result r = compile(HEADER + "@IntrabufMessage(minor = 1) record T(@Field(since = 1) int a) {}");

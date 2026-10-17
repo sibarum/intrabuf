@@ -60,8 +60,8 @@ class CompatibilityRulesTest {
     @Test
     void majorAndModeAndIdAlwaysMatter() {
         for (Compat c : Compat.values()) {
-            assertEquals(Reason.MAJOR_MISMATCH, fails(s(2, 0, c, FP, false), s(1, 0, c, FP, false)));
-            assertEquals(Reason.MAJOR_MISMATCH, fails(s(1, 0, c, FP, true), s(2, 0, c, FP, true)));
+            assertEquals(Reason.NEWER_MAJOR, fails(s(2, 0, c, FP, false), s(1, 0, c, FP, false)));
+            assertEquals(Reason.BELOW_OLDEST, fails(s(1, 0, c, FP, true), s(2, 0, c, FP, true)));
         }
         assertEquals(Reason.COMPAT_MISMATCH, fails(s(1, 0, Compat.FULL, FP, false), s(1, 0, Compat.BACKWARD, FP, false)));
         SchemaInfo other = new SchemaInfo("t.U", "t.U", ID + 1, 1, 0, Compat.STRICT, FP, false, "1");

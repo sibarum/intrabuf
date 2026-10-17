@@ -28,6 +28,8 @@ final class CodecGenerator {
     private final int fingerprint;
     private final boolean snapshot;
     private final String buildVersion;
+    /** A past version: read only, to be promoted, so its codec has no encoder. */
+    private final boolean past;
     private final Layout layout;
     private final Map<String, String> enumFields = new LinkedHashMap<>();
     private final StringBuilder sb = new StringBuilder();
@@ -36,11 +38,12 @@ final class CodecGenerator {
     /** Whether the value emitters target the text format ({@code t}) rather than the binary one ({@code w}/{@code r}). */
     private boolean text;
 
-    CodecGenerator(MessageModel m, int fingerprint, boolean snapshot, String buildVersion) {
+    CodecGenerator(MessageModel m, int fingerprint, boolean snapshot, String buildVersion, boolean past) {
         this.m = m;
         this.fingerprint = fingerprint;
         this.snapshot = snapshot;
         this.buildVersion = buildVersion;
+        this.past = past;
         this.layout = Layout.of(m.defs());
     }
 
@@ -75,6 +78,9 @@ final class CodecGenerator {
         line("public static final int FINGERPRINT = " + Hex.int32(fingerprint) + ";");
         line("public static final boolean SNAPSHOT = " + snapshot + ";");
         line("public static final String BUILD_VERSION = " + quote(buildVersion) + ";");
+        line("/** The oldest version this codec reads: older majors through the {@code @Promote} chain. */");
+        line("public static final int OLDEST_MAJOR = " + m.effectiveOldest().major() + ";");
+        line("public static final int OLDEST_MINOR = " + m.effectiveOldest().minor() + ";");
         line("");
         line("public static final " + RT + "SchemaInfo SCHEMA = new " + RT + "SchemaInfo(NAME, " + quote(m.javaName())
                 + ", ID, MAJOR, MINOR, " + RT + "Compat." + m.compat() + ", FINGERPRINT, SNAPSHOT, BUILD_VERSION);");
@@ -100,28 +106,33 @@ final class CodecGenerator {
             since.append(since.isEmpty() ? "" : ", ").append(f.since());
         }
         line("private " + m.codecSimpleName() + "() {");
-        line("    super(SCHEMA, new String[]{" + names + "}, new int[]{" + since + "});");
+        line("    super(SCHEMA, new String[]{" + names + "}, new int[]{" + since + "}, OLDEST_MAJOR, OLDEST_MINOR);");
         line("}");
         line("");
-        line("/** Encodes a complete binary payload. Same as {@code CODEC.encode(value)}. */");
-        line("public static byte[] toBytes(" + m.javaName() + " value) {");
-        line("    return CODEC.encode(value);");
-        line("}");
-        line("");
+        if (!past) {
+            line("/** Encodes a complete binary payload. Same as {@code CODEC.encode(value)}. */");
+            line("public static byte[] toBytes(" + m.javaName() + " value) {");
+            line("    return CODEC.encode(value);");
+            line("}");
+            line("");
+        }
         line("/** Decodes a complete payload, binary or text. Same as {@code CODEC.decode(payload)}. */");
         line("public static " + m.javaName() + " fromBytes(byte[] payload) {");
         line("    return CODEC.decode(payload);");
         line("}");
         line("");
-        line("/** Encodes a complete payload in the text format. Same as {@code CODEC.encodeText(value)}. */");
-        line("public static String toText(" + m.javaName() + " value) {");
-        line("    return CODEC.encodeText(value);");
-        line("}");
-        line("");
+        if (!past) {
+            line("/** Encodes a complete payload in the text format. Same as {@code CODEC.encodeText(value)}. */");
+            line("public static String toText(" + m.javaName() + " value) {");
+            line("    return CODEC.encodeText(value);");
+            line("}");
+            line("");
+        }
         line("/** Decodes a complete payload in the text format. Same as {@code CODEC.decodeText(text)}. */");
         line("public static " + m.javaName() + " fromText(String text) {");
         line("    return CODEC.decodeText(text);");
         line("}");
+        promotions();
         sb.append(methods);
         indent--;
         line("}");
@@ -131,12 +142,20 @@ final class CodecGenerator {
     private String methods() {
         indent = 1;
         line("");
-        writeBody();
+        if (past) {
+            pastWriter("writeBody", RT + "IbWriter w");
+        } else {
+            writeBody();
+        }
         line("");
         readBody();
         text = true;
         line("");
-        writeText();
+        if (past) {
+            pastWriter("writeText", RT + "TextWriter t");
+        } else {
+            writeText();
+        }
         line("");
         if (m.header()) {
             readHeaderText();
@@ -145,6 +164,82 @@ final class CodecGenerator {
         }
         text = false;
         return sb.toString();
+    }
+
+    // ---- promotions --------------------------------------------------------------------------------------------
+
+    /** A past version's writer: it has none, since a build writes only the current version of a schema. */
+    private void pastWriter(String name, String output) {
+        line("@Override");
+        line("protected void " + name + "(" + output + ", " + m.javaName() + " v) {");
+        line("    throw " + RT + "IntrabufException.pastVersion(NAME, MAJOR + \".\" + MINOR);");
+        line("}");
+    }
+
+    /**
+     * The minor-0 factory a promotion from the previous major builds its result with, the hooks that run that
+     * promotion, and the field promotions.
+     */
+    private void promotions() {
+        List<FieldModel> fields = m.fields();
+        if (m.compat() != Compat.STRICT && fields.stream().anyMatch(f -> f.since() > 0)) {
+            StringBuilder params = new StringBuilder();
+            StringBuilder args = new StringBuilder();
+            for (FieldModel f : fields) {
+                if (f.since() == 0) {
+                    params.append(params.isEmpty() ? "" : ", ").append(f.type().javaName()).append(' ').append(f.name());
+                }
+                args.append(args.isEmpty() ? "" : ", ").append(f.since() == 0 ? f.name() : defaultValue(f));
+            }
+            line("");
+            line("/**");
+            line(" * A value with exactly the fields of v" + m.major() + ".0, the rest defaulted: what a promotion from the");
+            line(" * previous major returns. Fields added since then are filled by their promotions, as for a v" + m.major()
+                    + ".0 payload.");
+            line(" */");
+            line("public static " + m.javaName() + " at" + m.major() + "_0(" + params + ") {");
+            line("    return new " + m.javaName() + "(" + args + ");");
+            line("}");
+        }
+        if (m.promotion() != null) {
+            line("");
+            line("@Override");
+            line("protected " + RT + "MessageCodec<?> previous() {");
+            line("    return " + m.promotion().fromCodec() + ".CODEC;");
+            line("}");
+            line("");
+            line("@Override");
+            line("protected " + m.javaName() + " promote(Object previous) {");
+            line("    return " + m.javaName() + "." + m.promotion().method() + "((" + m.promotion().fromJavaName() + ") previous);");
+            line("}");
+        }
+        if (!m.fieldPromotions().isEmpty()) {
+            line("");
+            line("@Override");
+            line("protected " + m.javaName() + " promoteMinors(" + m.javaName() + " v, int minor) {");
+            indent++;
+            // One step per minor that adds promoted fields, oldest first; each sees the steps before it applied.
+            java.util.TreeSet<Integer> steps = new java.util.TreeSet<>();
+            for (FieldModel f : fields) {
+                if (m.fieldPromotions().containsKey(f.name())) {
+                    steps.add(f.since());
+                }
+            }
+            for (int step : steps) {
+                StringBuilder args = new StringBuilder();
+                for (FieldModel f : fields) {
+                    String method = m.fieldPromotions().get(f.name());
+                    args.append(args.isEmpty() ? "" : ", ").append(method != null && f.since() == step
+                            ? m.javaName() + "." + method + "(v)" : "v." + f.accessor() + "()");
+                }
+                line("if (minor < " + step + ") {");
+                line("    v = new " + m.javaName() + "(" + args + ");");
+                line("}");
+            }
+            line("return v;");
+            indent--;
+            line("}");
+        }
     }
 
     // ---- application headers -----------------------------------------------------------------------------------

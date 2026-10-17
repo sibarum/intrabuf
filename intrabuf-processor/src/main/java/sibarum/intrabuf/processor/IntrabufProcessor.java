@@ -125,7 +125,7 @@ public final class IntrabufProcessor extends AbstractProcessor {
 
     private void write(MessageModel m) {
         String source = m.bundle() ? new BundleGenerator(m, models.fingerprint(m), snapshot, buildVersion).generate()
-                : new CodecGenerator(m, models.fingerprint(m), snapshot, buildVersion).generate();
+                : new CodecGenerator(m, models.fingerprint(m), snapshot, buildVersion, models.isPast(m)).generate();
         try {
             JavaFileObject file = processingEnv.getFiler().createSourceFile(m.codecName(), m.element());
             try (Writer w = file.openWriter()) {

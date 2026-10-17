@@ -13,7 +13,9 @@ public final class Compatibility {
      *
      * <ol>
      *   <li>The body must be in this runtime's wire format version.</li>
-     *   <li>Schema id, major and compat mode must match. A major mismatch is never decodable.</li>
+     *   <li>Schema id, major and compat mode must match. A newer major is never decodable ({@code NEWER_MAJOR}); an
+     *       older one is below this reader's oldest version ({@code BELOW_OLDEST}). A codec that declares promotions
+     *       hands an older major to the codec of that major before calling this.</li>
      *   <li>STRICT: the minor and the fingerprint must match as well.</li>
      *   <li>If the payload carries the reader's fingerprint, the structures are identical: decode.</li>
      *   <li>A snapshot writer with a different fingerprint is rejected whatever the mode, because a development
@@ -37,10 +39,11 @@ public final class Compatibility {
             throw fail(Reason.SCHEMA_MISMATCH, "payload schema id " + Hex.int32(h.schemaId()) + " is not "
                     + reader.name() + " (" + Hex.int32(reader.id()) + ")", reader, h);
         }
-        if (h.major() != reader.major()) {
-            throw fail(Reason.MAJOR_MISMATCH, reader.name() + " payload is major " + h.major()
-                    + "; this reader is major " + reader.major(), reader, h);
+        if (h.major() > reader.major()) {
+            throw fail(Reason.NEWER_MAJOR, reader.name() + " payload is v" + h.version() + "; this reader is v"
+                    + reader.version() + ", and majors never demote", reader, h);
         }
+        checkOldest(reader, h, reader.major(), 0);
         if (h.compat() != reader.compat()) {
             throw fail(Reason.COMPAT_MISMATCH, reader.name() + " payload was written in " + h.compat()
                     + " mode; this reader is " + reader.compat(), reader, h);
@@ -66,6 +69,22 @@ public final class Compatibility {
             }
         }
         return h.minor();
+    }
+
+    /**
+     * Rejects a payload of the reader's schema whose version is below {@code oldestMajor.oldestMinor}, the oldest the
+     * reader declares, saying what would reach it.
+     */
+    public static void checkOldest(SchemaInfo reader, Header h, int oldestMajor, int oldestMinor) {
+        if (h.major() > oldestMajor || h.major() == oldestMajor && h.minor() >= oldestMinor) {
+            return;
+        }
+        String reads = reader.name() + " payload is v" + h.version() + "; this reader reads v" + oldestMajor + "."
+                + oldestMinor + " to v" + reader.version();
+        throw fail(Reason.BELOW_OLDEST, h.major() == oldestMajor
+                ? reads + " (its oldest)"
+                : reads + ". Reading major " + h.major() + " needs a promotion from it to every later major"
+                        + " (@Promote) and oldest = \"" + h.major() + "." + h.minor() + "\" or below", reader, h);
     }
 
     private static IncompatiblePayloadException fail(Reason reason, String detail, SchemaInfo reader, Header h) {

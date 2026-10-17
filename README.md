@@ -48,7 +48,7 @@ equivalence is imposed that you didn't ask for. Each invariant a schema can decl
 |------------------------------------|------------------------------------------------------------------------|------------|
 | compat mode (STRICT, BACKWARD, FULL) | newer readers of older payloads, and older readers of newer ones      | yes        |
 | snapshot builds                    | drift caught while version numbers stand still                         | yes        |
-| [promotions and endpoints](docs/promotion.md) | older majors read through declared promotions; peers agree before sending | proposed   |
+| [promotions and endpoints](docs/promotion.md) | older majors read through declared promotions; peers agree before sending | partly     |
 | your own header                    | intrabuf's facts in your frame instead of in front of it               | yes        |
 | binary or text                     | a person can read or write any message                                 | yes        |
 | bundles                            | many messages of planned kinds in one payload                          | as a text log |
@@ -118,7 +118,8 @@ Every payload starts with a header: magic and wire version, flags, schema id, ma
 fingerprint where needed. A release payload in BACKWARD or FULL mode spends 8 bytes on the header. STRICT schemas
 and snapshot builds spend 12. Readers decide from the header alone whether they can decode the body:
 
-* **Wrong schema, wrong major, different compat mode** → always rejected.
+* **Wrong schema, newer major, different compat mode** → always rejected (`NEWER_MAJOR` for a newer major). An
+  **older major** is rejected (`BELOW_OLDEST`) unless the schema declares a [promotion](#promoting-across-a-major) from it.
 * **STRICT** (default): minor and fingerprint must both match. Smallest and fastest. If someone changes a STRICT
   schema and forgets to bump its version, the fingerprint catches it (`FINGERPRINT_MISMATCH`).
 * **BACKWARD**: newer readers decode older payloads. Fields the writer predates get defaults. Newer payloads are
@@ -179,13 +180,45 @@ Fields are positional, which is why payloads are small: no tags, no field names 
 * **Add** a field at the end with `@Field(since = n)` and bump `minor` to `n` (BACKWARD/FULL). The processor rejects
   a newer field placed before an older one.
 * A non-null field added later needs a default for older payloads. Collections default to empty and `String`/`byte[]`
-  to empty. Any other type must be nullable or `Optional`.
+  to empty. Any other type must be nullable or `Optional`, or computed by a `@Promote(field = ...)` method (below).
 * **Removing, reordering, renaming or retyping** a field, or changing the compat mode, is a **major** bump.
 * **Enums** are ordinals: only append constants.
 * Changing a nested message's major is breaking for every message that contains it.
 * A message may only contain messages at least as tolerant as itself: STRICT may contain anything, BACKWARD may
   contain BACKWARD or FULL, and FULL may contain only FULL. This is checked at compile time.
 * To rename a record without changing its schema, pin `@IntrabufMessage(name = "...")`. The id is a hash of that name.
+
+### Promoting across a major
+
+A newer major reads older ones only through promotions you declare. Keep the last release of the old major as a
+record under another Java name, and give the new record a `@Promote` method from it and an `oldest`:
+
+```java
+@IntrabufMessage(name = "example.Customer", major = 1, minor = 5, compat = Compat.BACKWARD)
+record CustomerV1(long id, String name, @Field(since = 5) String email) { }    // as it shipped; read-only now
+
+@IntrabufMessage(name = "example.Customer", major = 2, minor = 1, compat = Compat.BACKWARD, oldest = "1.0")
+public record Customer(long id, String first, String last, @Field(since = 1, nonNull = true) String display) {
+
+    @Promote
+    static Customer from(CustomerV1 old) {                  // lands at 2.0: the generated at2_0 defaults the rest
+        String[] n = old.name().split(" ", 2);
+        return CustomerIntrabuf.at2_0(old.id(), n[0], n[1]);
+    }
+
+    @Promote(field = "display")                             // for any payload before 2.1
+    static String display(Customer older) {
+        return older.first() + " " + older.last();
+    }
+}
+```
+
+`CustomerIntrabuf.fromBytes` then reads every version from 1.0 to 2.1, binary or text, and returns a `Customer`. A
+1.x payload is decoded by `CustomerV1`'s codec, promoted to 2.0, then has its 2.1 fields promoted. A payload at the
+current version takes the usual path, untouched. The processor checks the chain at compile time: a missing
+promotion, an `oldest` the chain doesn't reach, a promotion nothing reaches, or a past record held by a current
+message is an error. Promotions are one way and adjacent (major *n* from *n − 1*), and STRICT schemas have none.
+The design, including the history and endpoint handshake still to come, is in [docs/promotion.md](docs/promotion.md).
 
 ## Fast: what gets generated
 
@@ -328,7 +361,7 @@ bundle whose members do. Bundles are specified, along with the binary design sti
 ## Limits and non-goals (for now)
 
 * Records only. No polymorphism (sealed interfaces) yet.
-* Fields can't be removed within a major (positional encoding). Bump the major instead.
+* Fields can't be removed within a major (positional encoding). Bump the major instead, and promote from the old one.
 * Each binary payload holds one root message. To stream several, slice them yourself with `decode(bytes, off, len)`
   or length-prefix them, or write a bundle as a text log.
 * Bundles are text only, their members' messages are flat, and they aren't in the manifest, so the CLI can't read

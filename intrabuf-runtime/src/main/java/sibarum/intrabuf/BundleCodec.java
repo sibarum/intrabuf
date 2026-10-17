@@ -202,7 +202,7 @@ public abstract class BundleCodec<B, V> {
             }
             MessageCodec<?> codec = members.get(d[0]).codec();
             TextReader t = new TextReader(doc, facts, row);
-            Object value = codec.readText(t, d[1]);
+            Object value = codec.readTextAt(t, d[1]);
             t.endRow();
             handler.row(d[0], value);
         }

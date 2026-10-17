@@ -20,6 +20,12 @@ public class IntrabufException extends RuntimeException {
         return new IntrabufException(field + " is null but is declared non-null");
     }
 
+    /** Thrown by a past version's codec, which only decodes: a build writes one version of each schema. */
+    public static IntrabufException pastVersion(String schema, String version) {
+        return new IntrabufException(schema + " v" + version + " is a past version, kept only to be read and promoted;"
+                + " write the current version instead");
+    }
+
     /** Thrown by generated encoders for a null collection element, map key or map value. */
     public static IntrabufException nullElement(String field) {
         return new IntrabufException(field + " contains a null element; collection elements, map keys and map values must be non-null");

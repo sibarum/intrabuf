@@ -259,7 +259,7 @@ class TextFormatTest {
         assertEquals(Reason.SCHEMA_MISMATCH, assertThrows(IncompatiblePayloadException.class,
                 () -> CompatSchemas_ProfileV0Intrabuf.fromText(edited)).reason());
         String major2 = CompatSchemas_TokenMajor2Intrabuf.toText(new CompatSchemas.TokenMajor2("x"));
-        assertEquals(Reason.MAJOR_MISMATCH, assertThrows(IncompatiblePayloadException.class,
+        assertEquals(Reason.NEWER_MAJOR, assertThrows(IncompatiblePayloadException.class,
                 () -> CompatSchemas_TokenV0Intrabuf.fromText(major2)).reason());
     }
 

@@ -97,7 +97,7 @@ class CompatibilityTest {
     @Test
     void majorMismatchIsAlwaysFatal() {
         byte[] payload = CompatSchemas_TokenV0Intrabuf.toBytes(new TokenV0("t"));
-        assertEquals(Reason.MAJOR_MISMATCH, reason(CompatSchemas_TokenMajor2Intrabuf.CODEC, payload));
+        assertEquals(Reason.BELOW_OLDEST, reason(CompatSchemas_TokenMajor2Intrabuf.CODEC, payload));
     }
 
     @Test

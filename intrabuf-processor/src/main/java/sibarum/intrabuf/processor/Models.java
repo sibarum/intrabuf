@@ -7,8 +7,11 @@ import sibarum.intrabuf.annotation.Field;
 import sibarum.intrabuf.annotation.IntrabufBundle;
 import sibarum.intrabuf.annotation.IntrabufHeader;
 import sibarum.intrabuf.annotation.IntrabufMessage;
+import sibarum.intrabuf.annotation.Promote;
 import sibarum.intrabuf.annotation.Role;
 import sibarum.intrabuf.processor.MessageModel.FieldModel;
+import sibarum.intrabuf.processor.MessageModel.Promotion;
+import sibarum.intrabuf.processor.MessageModel.Version;
 import sibarum.intrabuf.schema.EnumDef;
 import sibarum.intrabuf.schema.Fingerprint;
 import sibarum.intrabuf.schema.MessageDef;
@@ -20,6 +23,7 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.RecordComponentElement;
@@ -30,6 +34,7 @@ import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
+import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -40,6 +45,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Builds and validates {@link MessageModel}s from records. Every rule a schema must satisfy is enforced here, at
@@ -49,7 +56,10 @@ final class Models {
 
     private static final Set<String> NON_NULL_NAMES = Set.of("NonNull", "Nonnull", "NotNull");
 
+    private static final Pattern VERSION = Pattern.compile("(\\d{1,9})\\.(\\d{1,9})");
+
     private final Elements elements;
+    private final Types types;
     private final Messager messager;
 
     /** Models by codec class name. */
@@ -59,10 +69,13 @@ final class Models {
     /** Qualified names of records annotated in this compilation; anything else we reach came from a jar. */
     private final Set<String> locals = new HashSet<>();
     private final Map<String, String> recordByCodec = new HashMap<>();
+    /** Codec names of past versions: records some {@code @Promote} method promotes from. */
+    private final Set<String> past = new HashSet<>();
     private boolean errors;
 
     Models(ProcessingEnvironment env) {
         this.elements = env.getElementUtils();
+        this.types = env.getTypeUtils();
         this.messager = env.getMessager();
     }
 
@@ -125,6 +138,12 @@ final class Models {
         models.put(codec, m);
         for (FieldModel f : m.fields()) {
             buildReferenced(f.type());
+        }
+        if (m.promotion() != null && !models.containsKey(m.promotion().fromCodec())) {
+            TypeElement from = elements.getTypeElement(m.promotion().fromJavaName());
+            if (from != null) {
+                build(from, !locals.contains(from.getQualifiedName().toString()));
+            }
         }
         return m;
     }
@@ -211,8 +230,104 @@ final class Models {
             id = ids[0];
         }
 
+        Version oldest = null;
+        if (ann != null && !ann.oldest().isEmpty()) {
+            Matcher v = VERSION.matcher(ann.oldest());
+            if (!v.matches()) {
+                error(te, "oldest = \"" + ann.oldest() + "\" must be \"major.minor\"");
+                ok = false;
+            } else {
+                oldest = new Version(Integer.parseInt(v.group(1)), Integer.parseInt(v.group(2)));
+                Version self = new Version(major, minor);
+                if (oldest.compareTo(self) > 0) {
+                    error(te, "oldest = \"" + oldest + "\" is newer than " + te.getSimpleName() + " itself (v" + self + ")");
+                    ok = false;
+                } else if (compat == Compat.STRICT && !oldest.equals(self)) {
+                    error(te, "a STRICT schema reads only its own version, so its oldest can only be \"" + self + "\"");
+                    ok = false;
+                }
+            }
+        }
+        Promotion promotion = null;
+        Map<String, String> promoted = new HashMap<>();
+        for (Element e : te.getEnclosedElements()) {
+            Promote p = e.getAnnotation(Promote.class);
+            if (p == null || e.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            ExecutableElement method = (ExecutableElement) e;
+            String where = te.getSimpleName() + "." + method.getSimpleName() + "()";
+            if (ann == null) {
+                error(method, where + ": @Promote is only meaningful on an @IntrabufMessage record");
+                ok = false;
+                continue;
+            }
+            if (compat == Compat.STRICT) {
+                error(method, where + ": a STRICT schema reads only its own version, so it has no promotions");
+                ok = false;
+                continue;
+            }
+            if (!method.getModifiers().contains(Modifier.STATIC) || method.getModifiers().contains(Modifier.PRIVATE)) {
+                error(method, where + ": a @Promote method must be static and not private: the generated codec calls it");
+                ok = false;
+                continue;
+            }
+            if (method.getParameters().size() != 1) {
+                error(method, where + ": a @Promote method takes exactly one parameter");
+                ok = false;
+                continue;
+            }
+            TypeMirror param = method.getParameters().getFirst().asType();
+            if (p.field().isEmpty()) {
+                TypeElement from = param.getKind() == TypeKind.DECLARED ? (TypeElement) types.asElement(param) : null;
+                IntrabufMessage fromAnn = from == null ? null : from.getAnnotation(IntrabufMessage.class);
+                if (from == null || from.getKind() != ElementKind.RECORD || fromAnn == null) {
+                    error(method, where + ": a promotion from the previous major takes that major's @IntrabufMessage record, not " + param);
+                    ok = false;
+                } else if (!schemaName(from).equals(schemaName)) {
+                    error(method, where + ": takes " + from.getSimpleName() + ", which is schema '" + schemaName(from)
+                            + "', not '" + schemaName + "'");
+                    ok = false;
+                } else if (fromAnn.major() != major - 1) {
+                    error(method, where + ": takes " + from.getSimpleName() + ", which is major " + fromAnn.major()
+                            + "; promotions are adjacent, so it must take major " + (major - 1));
+                    ok = false;
+                } else if (!types.isSameType(method.getReturnType(), te.asType())) {
+                    error(method, where + ": must return " + te.getSimpleName());
+                    ok = false;
+                } else if (promotion != null) {
+                    error(method, where + ": " + te.getSimpleName() + " already promotes from major " + (major - 1)
+                            + " with " + promotion.method() + "()");
+                    ok = false;
+                } else {
+                    promotion = new Promotion(method.getSimpleName().toString(), from.getQualifiedName().toString(),
+                            codecName(from), method);
+                }
+            } else {
+                RecordComponentElement rc = te.getRecordComponents().stream()
+                        .filter(c -> c.getSimpleName().contentEquals(p.field())).findFirst().orElse(null);
+                if (rc == null) {
+                    error(method, where + ": " + te.getSimpleName() + " has no component named '" + p.field() + "'");
+                    ok = false;
+                } else if (!types.isSameType(param, te.asType())) {
+                    error(method, where + ": takes the record as decoded at an older minor, so its parameter must be "
+                            + te.getSimpleName());
+                    ok = false;
+                } else if (!types.isSameType(method.getReturnType(), rc.asType())) {
+                    error(method, where + ": must return " + rc.asType() + ", the type of " + p.field());
+                    ok = false;
+                } else if (promoted.containsKey(p.field())) {
+                    error(method, where + ": " + p.field() + " is already promoted by " + promoted.get(p.field()) + "()");
+                    ok = false;
+                } else {
+                    promoted.put(p.field(), method.getSimpleName().toString());
+                }
+            }
+        }
+
         List<FieldModel> fields = new ArrayList<>();
         Map<String, HeaderRole> roles = new LinkedHashMap<>();
+        Map<String, String> fieldPromotions = new LinkedHashMap<>();
         int lastSince = 0;
         boolean warnedStrictSince = false;
         for (RecordComponentElement rc : te.getRecordComponents()) {
@@ -282,9 +397,16 @@ final class Models {
                     ok = false;
                 }
                 lastSince = Math.max(lastSince, since);
-                if (since > 0 && nonNullDeclared && !hasDefault(jt.ref())) {
+                String promoter = promoted.get(rc.getSimpleName().toString());
+                if (promoter != null && since == 0) {
+                    error(rc, where + ": is promoted by " + promoter + "(), but it is in minor 0, which every payload has");
+                    ok = false;
+                } else if (promoter != null) {
+                    fieldPromotions.put(rc.getSimpleName().toString(), promoter);
+                } else if (since > 0 && nonNullDeclared && !hasDefault(jt.ref())) {
                     error(rc, where + ": a non-null " + jt.ref() + " added in minor " + since
-                            + " has no default to give readers of older payloads; make it nullable or Optional");
+                            + " has no default to give readers of older payloads; make it nullable or Optional,"
+                            + " or compute it with @Promote(field = \"" + rc.getSimpleName() + "\")");
                     ok = false;
                 }
             }
@@ -306,7 +428,7 @@ final class Models {
         String codec = codecName(te);
         recordByCodec.put(codec, te.getQualifiedName().toString());
         return new MessageModel(te, schemaName, te.getQualifiedName().toString(), codec, id, major, minor,
-                compat, fields, external, header, roles, bundle);
+                compat, fields, external, header, roles, bundle, oldest, promotion, fieldPromotions);
     }
 
     /** Whether a component's type can carry {@code role}; reports why not. */
@@ -546,7 +668,7 @@ final class Models {
                 ok &= checkStandalone(m);
             }
         }
-        if (!ok) {
+        if (!ok || !linkPromotions()) {
             return false;
         }
         for (MessageModel m : models.values()) {
@@ -558,6 +680,82 @@ final class Models {
             }
         }
         return ok;
+    }
+
+    /**
+     * Marks every record a promotion starts from as a past version, then checks that each declared oldest is
+     * reached by a chain of promotions, that no promotion is unreachable, and that only past versions hold past
+     * versions.
+     */
+    private boolean linkPromotions() {
+        boolean ok = true;
+        for (MessageModel m : models.values()) {
+            if (m.promotion() != null) {
+                if (!models.containsKey(m.promotion().fromCodec())) {
+                    return false; // already reported while building it
+                }
+                past.add(m.promotion().fromCodec());
+            }
+        }
+        for (MessageModel m : models.values()) {
+            if (m.header() || m.bundle()) {
+                continue;
+            }
+            Version oldest = m.effectiveOldest();
+            if (m.promotion() != null && !past.contains(m.codecName()) && oldest.major() == m.major()) {
+                error(m.promotion().where(), m.element().getSimpleName() + "." + m.promotion().method()
+                        + "() promotes from major " + (m.major() - 1) + ", but " + m.element().getSimpleName()
+                        + " reads only from v" + oldest + ", so it never runs; declare oldest = \"" + (m.major() - 1)
+                        + ".0\", or the version it should read from");
+                ok = false;
+            }
+            MessageModel at = m;
+            while (at.major() > oldest.major()) {
+                if (at.promotion() == null) {
+                    error(m.element(), m.schemaName() + ": " + m.element().getSimpleName() + " declares oldest = \""
+                            + oldest + "\", but nothing promotes major " + (at.major() - 1) + " to major " + at.major()
+                            + ". Add to " + at.javaName() + ": @Promote static " + at.element().getSimpleName()
+                            + " from(<the major " + (at.major() - 1) + " record> old)");
+                    ok = false;
+                    break;
+                }
+                at = models.get(at.promotion().fromCodec());
+            }
+            if (at.major() == oldest.major() && at != m) {
+                if (oldest.minor() > at.minor()) {
+                    error(m.element(), m.element().getSimpleName() + " declares oldest = \"" + oldest + "\", newer than "
+                            + at.javaName() + " (v" + at.major() + "." + at.minor() + "), the major " + at.major()
+                            + " record that reads it");
+                    ok = false;
+                } else if (at.compat() == Compat.STRICT && oldest.minor() != at.minor()) {
+                    error(m.element(), m.element().getSimpleName() + " declares oldest = \"" + oldest + "\", but "
+                            + at.javaName() + " is STRICT and reads only v" + at.major() + "." + at.minor());
+                    ok = false;
+                }
+            }
+        }
+        for (MessageModel m : models.values()) {
+            if (past.contains(m.codecName())) {
+                continue;
+            }
+            for (FieldModel f : m.fields()) {
+                for (String codec : messageCodecs(f.type(), new ArrayList<>())) {
+                    if (past.contains(codec)) {
+                        MessageModel p = models.get(codec);
+                        error(m.element(), m.element().getSimpleName() + "." + f.name() + " holds " + p.javaName()
+                                + ", a past version of " + p.schemaName() + ". Past versions are only read, to be"
+                                + " promoted, so only another past version may hold one");
+                        ok = false;
+                    }
+                }
+            }
+        }
+        return ok;
+    }
+
+    /** Whether {@code m} is a past version: a record some promotion starts from. Valid after {@link #link()}. */
+    boolean isPast(MessageModel m) {
+        return past.contains(m.codecName());
     }
 
     private boolean checkNesting(MessageModel m, FieldModel f, JType t) {

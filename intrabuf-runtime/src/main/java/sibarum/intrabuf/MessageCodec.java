@@ -32,6 +32,8 @@ public abstract class MessageCodec<T> {
     private final List<String> fieldNames;
     private final int[] fieldSince;
     private final TextWriter.Section section;
+    private final int oldestMajor;
+    private final int oldestMinor;
     private int sizeHint = 64;
 
     /**
@@ -39,6 +41,16 @@ public abstract class MessageCodec<T> {
      * @param fieldSince the minor each field was added in
      */
     protected MessageCodec(SchemaInfo schema, String[] fieldNames, int[] fieldSince) {
+        this(schema, fieldNames, fieldSince, schema.major(), 0);
+    }
+
+    /**
+     * @param oldestMajor the oldest version this codec reads as a top-level payload: an older major goes through
+     *                    {@link #previous()} and {@link #promote}
+     */
+    protected MessageCodec(SchemaInfo schema, String[] fieldNames, int[] fieldSince, int oldestMajor, int oldestMinor) {
+        this.oldestMajor = oldestMajor;
+        this.oldestMinor = oldestMinor;
         this.schema = schema;
         this.header = Header.encode(schema);
         this.fieldNames = List.of(fieldNames);
@@ -161,6 +173,15 @@ public abstract class MessageCodec<T> {
      * occupy the rest of {@code r} (with the same trailing-bytes rule as {@link #decode(IbReader)}).
      */
     public final T decodeBody(Header h, IbReader r) {
+        checkOldest(h);
+        return decodeAt(h, r);
+    }
+
+    /** Decodes a payload whose version the entry codec has accepted: an older major via the previous codec. */
+    private T decodeAt(Header h, IbReader r) {
+        if (promotes(h)) {
+            return lift(previous().decodeAt(h, r));
+        }
         return finish(r, Compatibility.check(schema, h));
     }
 
@@ -174,6 +195,14 @@ public abstract class MessageCodec<T> {
 
     /** Checks {@code h} (the document's facts) against this codec's schema, then decodes the document's root. */
     public final T decodeTextBody(Header h, TextDocument d) {
+        checkOldest(h);
+        return decodeTextAt(h, d);
+    }
+
+    private T decodeTextAt(Header h, TextDocument d) {
+        if (promotes(h)) {
+            return lift(previous().decodeTextAt(h, d));
+        }
         int minor = Compatibility.check(schema, h);
         if (!d.schemaName().equals(schema.name())) {
             throw new IncompatiblePayloadException(IncompatiblePayloadException.Reason.SCHEMA_MISMATCH,
@@ -187,13 +216,62 @@ public abstract class MessageCodec<T> {
     /** Checks the row's columns against the fields {@code minor} has, then reads the row. */
     final T readTextRow(TextReader t, int minor) {
         TextReader.checkColumns(t.row().table(), columns(minor), minor > schema.minor());
-        T value = readText(t, minor);
+        T value = readTextAt(t, minor);
         t.endRow();
         return value;
     }
 
+    /** Reads a row written by {@code minor}, then promotes the fields it predates. */
+    final T readTextAt(TextReader t, int minor) {
+        return promoteMinors(readText(t, minor), minor);
+    }
+
+    /** Reads a body written by {@code minor}, then promotes the fields it predates. */
+    private T readBodyAt(IbReader r, int minor) {
+        return promoteMinors(readBody(r, minor), minor);
+    }
+
+    // ---- promotions --------------------------------------------------------------------------------------------
+
+    /** Whether a payload at {@code h} is an older major of this schema, which {@link #previous()} decodes. */
+    private boolean promotes(Header h) {
+        return h.schemaId() == schema.id() && h.major() >= 0 && h.major() < schema.major() && previous() != null;
+    }
+
+    /** Rejects a payload of this schema below this codec's oldest version, before anything is decoded. */
+    private void checkOldest(Header h) {
+        if (h.schemaId() == schema.id() && h.major() >= 0 && h.major() <= schema.major()) {
+            Compatibility.checkOldest(schema, h, oldestMajor, oldestMinor);
+        }
+    }
+
+    /** A value of the previous major, promoted to this one: it lands at minor 0, then the field promotions run. */
+    private T lift(Object previous) {
+        return promoteMinors(promote(previous), 0);
+    }
+
+    // ---- promotion hooks, overridden by generated codecs -------------------------------------------------------
+
+    /** The codec of the previous major, if this schema declares a promotion from it; null otherwise. */
+    protected MessageCodec<?> previous() {
+        return null;
+    }
+
+    /** Calls the {@code @Promote} method from the previous major. Generated when {@link #previous()} is. */
+    protected T promote(Object previous) {
+        throw new IllegalStateException(schema.name() + " declares no promotion from major " + (schema.major() - 1));
+    }
+
+    /**
+     * Fills the fields a value read at {@code minor} predates with their {@code @Promote(field = ...)} methods, in
+     * minor order. Generated when there are any; otherwise those fields keep their defaults.
+     */
+    protected T promoteMinors(T value, int minor) {
+        return value;
+    }
+
     private T finish(IbReader r, int minor) {
-        T value = readBody(r, minor);
+        T value = readBodyAt(r, minor);
         if (r.remaining() != 0 && minor <= schema.minor()) {
             throw new IntrabufException(r.remaining() + " trailing byte(s) after " + schema.name() + " payload");
         }
@@ -227,7 +305,7 @@ public abstract class MessageCodec<T> {
 
     private T readNestedFrame(IbReader r) {
         return switch (schema.compat()) {
-            case STRICT -> readBody(r, schema.minor());
+            case STRICT -> readBodyAt(r, schema.minor());
             case BACKWARD -> {
                 int minor = r.readCount();
                 if (minor > schema.minor()) {
@@ -235,7 +313,7 @@ public abstract class MessageCodec<T> {
                             "nested " + schema.name() + " is minor " + minor + ", newer than this reader's v"
                                     + schema.version(), schema, null);
                 }
-                yield readBody(r, minor);
+                yield readBodyAt(r, minor);
             }
             case FULL -> {
                 int minor = r.readCount();
@@ -245,7 +323,7 @@ public abstract class MessageCodec<T> {
                             + r.remaining() + " remain");
                 }
                 int end = r.position() + len;
-                T value = readBody(r, minor);
+                T value = readBodyAt(r, minor);
                 int at = r.position();
                 if (at > end || (at < end && minor <= schema.minor())) {
                     throw new IntrabufException("nested " + schema.name() + " body is " + (at - end + len)

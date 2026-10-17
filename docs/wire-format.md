@@ -97,7 +97,10 @@ names, compat modes, and for each field its name, type, nullability and `since`.
 
 Given the reader's schema and the payload header, in order:
 
-1. Schema id, major and compat mode must match.
+1. Schema id, major and compat mode must match. A newer major is rejected (`NEWER_MAJOR`). An older one, or a
+   version below the reader's declared oldest, is rejected (`BELOW_OLDEST`) unless the reader declares a chain of
+   promotions reaching it; then the codec of that major decodes it by these same rules and the result is promoted
+   (see `promotion.md`).
 2. STRICT: the minor must match.
 3. If the payload carries a fingerprint equal to the reader's, decode.
 4. If the payload is from a snapshot build, reject (`SNAPSHOT_DRIFT`).

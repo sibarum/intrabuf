@@ -1,14 +1,16 @@
 # Intrabuf promotions and endpoints
 
-> **Proposal.** Nothing in this document exists yet. What exists is the per-payload compatibility decision in
-> [wire-format.md](wire-format.md#compatibility-decision): STRICT, BACKWARD and FULL within one major, and a major
-> mismatch that is never decodable. Names, annotations and error codes here are placeholders to argue about.
+> **Status: partly implemented.** What exists is [promotions](#two-kinds-of-step): `@Promote`, `oldest`, past
+> versions and the chain the processor checks, and the [split of the major mismatch](#reading-a-payload) into
+> `NEWER_MAJOR` and `BELOW_OLDEST`. Still a proposal: [history](#history-what-the-build-knows-about-the-past),
+> [endpoints and the handshake](#endpoints-and-the-handshake), and the generated `promote` helper for nested past
+> records. Names in those parts are placeholders to argue about.
 
-Today a reader knows one version of each schema, and the compat mode says which other versions it puts up with.
-Older minors are read by giving new fields their defaults. Newer minors, in FULL, are read by ignoring what comes
-after the fields the reader knows. Another major is never read.
+Without promotions a reader knows one version of each schema, and the compat mode says which other versions it puts
+up with. Older minors are read by giving new fields their defaults. Newer minors, in FULL, are read by ignoring what
+comes after the fields the reader knows. Another major is never read.
 
-This proposal makes the upgrade explicit and the whole question decidable before a byte is sent:
+This document makes the upgrade explicit and the whole question decidable before a byte is sent:
 
 * **A version is a type.** `example.Customer 1.5` and `example.Customer 2.0` are different things, the way 2/4 and
   1/2 are, until you say how to get from one to the other.
@@ -94,31 +96,42 @@ public record Customer(long id, String first, String last, @Field(since = 3, non
 
 The rules:
 
-* **A past major is a record with the same schema name and a lower major.** It stands for the last released minor of
-  that major. Its own minor promotions cover the minors before it, so one frozen record per major is enough.
+* **A past major is the record a promotion takes.** It has the same schema name and the previous major, and stands
+  for the last released minor of that major. Its own defaults and field promotions cover the minors before it, so one
+  frozen record per major is enough. Being taken by a `@Promote` method is what makes a record past; other records
+  of the same schema at a lower major (another deployment's, say) are ordinary.
 * **Promotions are adjacent.** A `@Promote` method on major *n*'s record takes major *n − 1*'s record and nothing else.
   There are no skip edges, so the chain from any version is unique and the processor composes it.
 * **A major promotion lands at minor 0.** `CustomerIntrabuf.at2_0(...)` is a generated factory that takes exactly the
   fields of 2.0 and defaults the rest. The promoted value is then treated as a decoded 2.0 payload, and the minor
   promotions 2.0 → 2.3 run on it. Adding minor 2.4 never edits the promotion from 1.x.
-* **Past versions are read-only.** A build writes exactly one version of each schema, its current one. That is an
-  invariant the endpoint handshake relies on: a peer is never asked to choose which version to send.
-* **`oldest` is declared.** It is the lowest version the build reads. The processor proves a chain from it to the
-  current version exists and fails the build otherwise, naming the link:
+* **Past versions are read-only.** A build writes exactly one version of each schema, its current one. A past
+  record's codec has no `toBytes` or `toText`, and encoding with it throws. Only another past version may hold one
+  as a field. That is an invariant the endpoint handshake relies on: a peer is never asked to choose which version
+  to send.
+* **`oldest` is declared.** It is the lowest version the codec reads. The processor proves a chain from it to the
+  record exists and fails the build otherwise, naming the link:
 
   ```
-  error: example.Customer declares oldest = "1.0" but nothing promotes major 1 to major 2.
-         add to Customer:  @Promote static Customer from(CustomerV1 old)
+  error: example.Customer: Customer declares oldest = "1.0", but nothing promotes major 1 to major 2.
+         Add to example.CustomerV2: @Promote static CustomerV2 from(<the major 1 record> old)
   ```
 
-  Without `oldest`, a schema reads only its own major, as today. STRICT schemas have no promotions: their oldest is
-  their current version.
-* **Nested messages promote through their own chain.** A container's promotion that holds a past nested record calls
-  the nested schema's generated `AddressIntrabuf.promote(AddressV1)`, which runs Address's chain to its current
-  version. A nested major bump is still a major bump for every container, as today.
+  It also rejects an oldest newer than the past record that would read it, and a promotion the record's oldest
+  never reaches. Without `oldest`, a schema reads only its own major, as before. STRICT schemas have no promotions:
+  their oldest is their current version.
+* **Only the entry codec checks `oldest`.** A past record used directly reads from its own oldest. Reached through
+  the chain, it decodes whatever the codec that declared the range accepted.
+* **Field promotions apply wherever a value is read at an older minor:** the root, nested messages, text tables
+  and bundle rows.
+* **Nested majors don't promote yet.** A container whose promotion holds a past nested record must promote that
+  record itself, calling the nested record's `@Promote` method. A generated `AddressIntrabuf.promote(AddressV1)`,
+  running the nested schema's chain to its current version, is still to come. A nested major bump is still a major
+  bump for every container.
 
 When major 3 arrives, `Customer` is renamed `CustomerV2`, keeps its `@Promote from(CustomerV1)`, and the new
-`Customer` declares `@Promote from(CustomerV2)`. An IDE rename carries everything.
+`Customer` declares `@Promote from(CustomerV2)`. Calls to the generated codec (`CustomerIntrabuf.at2_0` becomes
+`CustomerV2Intrabuf.at2_0`) don't follow a rename; the compiler finds each one.
 
 ## History: what the build knows about the past
 
@@ -160,14 +173,16 @@ A payload at the current version takes today's path, byte for byte. Only old pay
 The [compatibility decision](wire-format.md#compatibility-decision) changes in one step, a major mismatch, which
 splits:
 
-| payload major            | today            | proposed                                                         |
+| payload major            | before           | now                                                              |
 |--------------------------|------------------|------------------------------------------------------------------|
 | below the reader's, in range | `MAJOR_MISMATCH` | decode, then promote                                            |
 | below `oldest`           | `MAJOR_MISMATCH` | `BELOW_OLDEST`: names `oldest` and the promotion that would reach it |
 | above the reader's       | `MAJOR_MISMATCH` | `NEWER_MAJOR`: majors never demote                               |
 
-A minor below `oldest`'s minor is `BELOW_OLDEST` too. The text format, bundles and application headers carry the same
-facts and take the same decision.
+A minor below `oldest`'s minor is `BELOW_OLDEST` too, and is refused before anything is decoded. Text payloads and
+application headers carry the same facts and take the same decision. `MAJOR_MISMATCH` remains for what has no
+promotion chain: a nested message's table or a bundle member's declaration at another major, and a payload matched
+against loaded manifests by the CLI.
 
 ## Endpoints and the handshake
 
