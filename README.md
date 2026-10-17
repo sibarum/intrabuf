@@ -48,6 +48,7 @@ equivalence is imposed that you didn't ask for. Each invariant a schema can decl
 |------------------------------------|------------------------------------------------------------------------|------------|
 | compat mode (STRICT, BACKWARD, FULL) | newer readers of older payloads, and older readers of newer ones      | yes        |
 | snapshot builds                    | drift caught while version numbers stand still                         | yes        |
+| [promotions and endpoints](docs/promotion.md) | older majors read through declared promotions; peers agree before sending | proposed   |
 | your own header                    | intrabuf's facts in your frame instead of in front of it               | yes        |
 | binary or text                     | a person can read or write any message                                 | yes        |
 | bundles                            | many messages of planned kinds in one payload                          | as a text log |
