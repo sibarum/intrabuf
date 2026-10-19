@@ -2,12 +2,15 @@ package sibarum.intrabuf;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Random;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WireTest {
 
@@ -121,6 +124,102 @@ class WireTest {
         assertEquals(3, r.readByte());
         assertThrows(IntrabufException.class, r::readByte);
         assertThrows(IntrabufException.class, () -> new IbReader(b, 0, 3).readFixed32());
+    }
+
+    private static String roundTrip(String s) {
+        IbWriter w = new IbWriter(1);
+        w.writeString(s);
+        w.writeInt8((byte) 0x66);
+        IbReader r = new IbReader(w.toByteArray());
+        String back = r.readString();
+        assertEquals(0x66, r.readByte());
+        assertEquals(0, r.remaining());
+        return back;
+    }
+
+    private static byte[] encodedString(String s) {
+        IbWriter w = new IbWriter();
+        w.writeString(s);
+        IbReader r = new IbReader(w.toByteArray());
+        int len = r.readCount();
+        byte[] b = new byte[len];
+        for (int i = 0; i < len; i++) {
+            b[i] = r.readByte();
+        }
+        assertEquals(0, r.remaining());
+        return b;
+    }
+
+    @Test
+    void wellFormedStringsAreExactlyUtf8() {
+        // The hand-written encoder must not change a single byte of what getBytes wrote before it.
+        Random rnd = new Random(20261019);
+        int[] cps = {'a', 0x7F, 0x80, 0x7FF, 0x800, 0xD7FF, 0xE000, 0xFFFD, 0xFFFF, 0x10000, 0x1F600, 0x10FFFF};
+        for (int iter = 0; iter < 2000; iter++) {
+            StringBuilder sb = new StringBuilder();
+            for (int n = rnd.nextInt(iter < 1000 ? 10 : 300); n > 0; n--) {
+                sb.appendCodePoint(rnd.nextBoolean() ? cps[rnd.nextInt(cps.length)] : rnd.nextInt(0x110000) & ~0x800);
+            }
+            String s = sb.toString();
+            assertArrayEquals(s.getBytes(StandardCharsets.UTF_8), encodedString(s), s);
+            assertEquals(s, roundTrip(s));
+        }
+    }
+
+    @Test
+    void unpairedSurrogatesRoundTrip() {
+        String[] strings = {"\uD800", "\uDC00", "\uDBFF\uDBFF", "\uDC00\uD800", "a\uD83D", "\uDE00b", "😀\uD83D",
+                "x".repeat(200) + "\uD800", "é\uDFFF" + "😀".repeat(100), "�", "�\uD800�"};
+        for (String s : strings) {
+            assertEquals(s, roundTrip(s), s);
+        }
+        // The three bytes of the code unit, as generalized UTF-8 (WTF-8) writes it.
+        assertArrayEquals(new byte[]{(byte) 0xED, (byte) 0xA0, (byte) 0x80}, encodedString("\uD800"));
+        assertArrayEquals(new byte[]{'a', (byte) 0xED, (byte) 0xBF, (byte) 0xBF}, encodedString("a\uDFFF"));
+        // A pair is one code point, whichever surrogates sit around it.
+        assertArrayEquals(new byte[]{(byte) 0xED, (byte) 0xA0, (byte) 0xBD, (byte) 0xF0, (byte) 0x9F, (byte) 0x98, (byte) 0x80},
+                encodedString("\uD83D😀"));
+    }
+
+    @Test
+    void randomCodeUnitsRoundTrip() {
+        Random rnd = new Random(7);
+        for (int iter = 0; iter < 5000; iter++) {
+            char[] cs = new char[rnd.nextInt(iter < 4000 ? 8 : 400)];
+            for (int i = 0; i < cs.length; i++) {
+                // Mostly surrogates, so unpaired ones and pairs both turn up often.
+                cs[i] = rnd.nextInt(3) == 0 ? (char) rnd.nextInt(0x10000) : (char) (0xD800 + rnd.nextInt(0x800));
+            }
+            String s = new String(cs);
+            assertEquals(s, roundTrip(s));
+        }
+    }
+
+    @Test
+    void malformedUtf8IsRejected() {
+        byte[][] bad = {
+                {(byte) 0x80},                                     // a continuation with no lead
+                {(byte) 0xC0, (byte) 0x80},                        // overlong NUL
+                {(byte) 0xE0, (byte) 0x80, (byte) 0x80},           // overlong
+                {(byte) 0xF0, (byte) 0x80, (byte) 0x80, (byte) 0x80},
+                {(byte) 0xE2, (byte) 0x82},                        // truncated
+                {'a', (byte) 0xC3},
+                {(byte) 0xF4, (byte) 0x90, (byte) 0x80, (byte) 0x80}, // past U+10FFFF
+                {(byte) 0xF5, (byte) 0x80, (byte) 0x80, (byte) 0x80},
+                {(byte) 0xFF},
+                {(byte) 0xC3, 'a'},
+                // A pair as two halves: no writer produces it, since it would read back as the pair.
+                {(byte) 0xED, (byte) 0xA0, (byte) 0xBD, (byte) 0xED, (byte) 0xB8, (byte) 0x80},
+        };
+        for (byte[] b : bad) {
+            IbWriter w = new IbWriter();
+            w.writeBytes(b); // a length and the bytes: the framing of a string
+            IntrabufException e = assertThrows(IntrabufException.class, () -> new IbReader(w.toByteArray()).readString(),
+                    java.util.Arrays.toString(b));
+            assertTrue(e.getMessage().contains("invalid UTF-8"), e.getMessage());
+        }
+        // A replacement character that was really written is not a sign of anything wrong.
+        assertEquals("a�b", roundTrip("a�b"));
     }
 
     @Test

@@ -63,7 +63,7 @@ A field whose presence bit is 0, or that has no body (booleans), writes nothing.
 | `fixed32`, `fixed64` | 4 / 8 bytes (`@Field(fixed = true)` on int / long)                    |
 | `float32`, `float64` | 4 / 8 bytes, IEEE 754 raw bits                                        |
 | `char`            | varint of the UTF-16 code unit                                           |
-| `string`          | varint byte length, UTF-8                                                 |
+| `string`          | varint byte length, generalized UTF-8 (below)                             |
 | `bytes`           | varint length, raw                                                        |
 | `uuid`            | 8 bytes most significant, 8 bytes least significant                       |
 | `instant`         | zigzag epoch seconds, varint nanos (0–999,999,999)                        |
@@ -74,6 +74,11 @@ A field whose presence bit is 0, or that has no body (booleans), writes nothing.
 | `message<M>`      | a nested message, framed by **M's** compat mode (below)                    |
 
 Collection elements, map keys and map values are never null.
+
+A Java string is UTF-16 code units, which may include a surrogate with no partner. UTF-8 cannot carry one, so a
+string is generalized UTF-8 (as in WTF-8): exactly UTF-8, except that an unpaired surrogate takes the three bytes its
+code unit would. Every string reads back equal to the one written. A surrogate pair is always one four-byte code
+point, never two three-byte halves, and readers reject bytes no writer produces.
 
 ### Nested messages
 
@@ -102,7 +107,8 @@ Given the reader's schema and the payload header, in order:
    promotions reaching it; then the codec of that major decodes it by these same rules and the result is promoted
    (see `promotion.md`).
 2. STRICT: the minor must match.
-3. If the payload carries a fingerprint equal to the reader's, decode.
+3. If the payload carries a fingerprint equal to the reader's, decode at the reader's own minor: the structures are
+   identical, whatever minor the payload claims.
 4. If the payload is from a snapshot build, reject (`SNAPSHOT_DRIFT`).
 5. STRICT: reject (`FINGERPRINT_MISMATCH`).
 6. BACKWARD: reject if the payload's minor is newer than the reader's.

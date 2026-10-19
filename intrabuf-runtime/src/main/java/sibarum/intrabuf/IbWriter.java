@@ -3,7 +3,6 @@ package sibarum.intrabuf;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.UUID;
@@ -210,9 +209,59 @@ public final class IbWriter {
                 return;
             }
         }
-        byte[] b = s.getBytes(StandardCharsets.UTF_8);
-        writeVarint(b.length);
-        writeRaw(b, 0, b.length);
+        // Encoded by hand rather than with getBytes, which would turn an unpaired surrogate into '?': a Java string
+        // is UTF-16 code units, and every one of them comes back. See utf8Length.
+        int n = utf8Length(s);
+        writeVarint(n);
+        ensure(n);
+        int p = pos;
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            if (c < 0x80) {
+                buf[p++] = (byte) c;
+            } else if (c < 0x800) {
+                buf[p++] = (byte) (0xC0 | (c >>> 6));
+                buf[p++] = (byte) (0x80 | (c & 0x3F));
+            } else if (Character.isHighSurrogate(c) && i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+                int cp = Character.toCodePoint(c, s.charAt(++i));
+                buf[p++] = (byte) (0xF0 | (cp >>> 18));
+                buf[p++] = (byte) (0x80 | ((cp >>> 12) & 0x3F));
+                buf[p++] = (byte) (0x80 | ((cp >>> 6) & 0x3F));
+                buf[p++] = (byte) (0x80 | (cp & 0x3F));
+            } else {
+                // Includes an unpaired surrogate, as the three bytes its code unit would have.
+                buf[p++] = (byte) (0xE0 | (c >>> 12));
+                buf[p++] = (byte) (0x80 | ((c >>> 6) & 0x3F));
+                buf[p++] = (byte) (0x80 | (c & 0x3F));
+            }
+        }
+        pos = p;
+    }
+
+    /**
+     * The encoded length of {@code s}: UTF-8, generalized (as WTF-8 is) so that an unpaired surrogate, which UTF-8
+     * cannot carry, takes the three bytes of its code unit. A string without one encodes exactly as UTF-8.
+     */
+    static int utf8Length(String s) {
+        int len = s.length();
+        long n = len;
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            if (c >= 0x80) {
+                if (c < 0x800) {
+                    n += 1;
+                } else if (Character.isHighSurrogate(c) && i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+                    n += 2; // four bytes for two chars
+                    i++;
+                } else {
+                    n += 2;
+                }
+            }
+        }
+        if (n > Integer.MAX_VALUE - 8) {
+            throw new IntrabufException("string of " + len + " chars exceeds the maximum array size when encoded");
+        }
+        return (int) n;
     }
 
     public void writeBytes(byte[] b) {

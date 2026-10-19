@@ -262,8 +262,77 @@ public final class IbReader {
         int len = readCount();
         need(len);
         String s = new String(buf, pos, len, StandardCharsets.UTF_8);
+        if (s.indexOf('�') >= 0) {
+            // The JDK replaces what UTF-8 cannot hold, including the unpaired surrogates a writer carries (see
+            // IbWriter#utf8Length). Rare, so only then decode by hand, rejecting what no writer produces.
+            s = readGeneralizedUtf8(pos, len);
+        }
         pos += len;
         return s;
+    }
+
+    /** Decodes generalized UTF-8: UTF-8, plus unpaired surrogates as the three bytes of their code unit. */
+    private String readGeneralizedUtf8(int from, int len) {
+        char[] out = new char[len];
+        int n = 0;
+        int p = from;
+        int end = from + len;
+        while (p < end) {
+            int b = buf[p] & 0xFF;
+            if (b < 0x80) {
+                out[n++] = (char) b;
+                p++;
+                continue;
+            }
+            int more;
+            int cp;
+            int min;
+            if (b >= 0xC2 && b <= 0xDF) {
+                more = 1;
+                cp = b & 0x1F;
+                min = 0x80;
+            } else if (b >= 0xE0 && b <= 0xEF) {
+                more = 2;
+                cp = b & 0x0F;
+                min = 0x800;
+            } else if (b >= 0xF0 && b <= 0xF4) {
+                more = 3;
+                cp = b & 0x07;
+                min = 0x10000;
+            } else {
+                throw malformedUtf8(p);
+            }
+            if (end - p <= more) {
+                throw malformedUtf8(p);
+            }
+            for (int k = 1; k <= more; k++) {
+                int c = buf[p + k] & 0xFF;
+                if ((c & 0xC0) != 0x80) {
+                    throw malformedUtf8(p);
+                }
+                cp = (cp << 6) | (c & 0x3F);
+            }
+            if (cp < min || cp > Character.MAX_CODE_POINT) {
+                throw malformedUtf8(p); // overlong, or past Unicode
+            }
+            p += more + 1;
+            if (cp >= 0x10000) {
+                out[n++] = Character.highSurrogate(cp);
+                out[n++] = Character.lowSurrogate(cp);
+            } else {
+                // A writer encodes a surrogate pair as one four-byte code point, never as two halves.
+                if (Character.isHighSurrogate((char) cp) && end - p >= 3 && buf[p] == (byte) 0xED
+                        && (buf[p + 1] & 0xF0) == 0xB0) {
+                    throw malformedUtf8(p);
+                }
+                out[n++] = (char) cp;
+            }
+        }
+        return new String(out, 0, n);
+    }
+
+    private IntrabufException malformedUtf8(int at) {
+        return new IntrabufException("invalid UTF-8 in a string at offset " + (at - start));
     }
 
     public byte[] readBytes() {

@@ -70,9 +70,12 @@ class CompatibilityRulesTest {
 
     @Test
     void snapshots() {
-        // Same structure: fine, whatever the versions say (within a major and mode).
+        // Same structure: fine, whatever the versions say (within a major and mode), and read as the reader's own
+        // minor. A BACKWARD body has no layout at a minor newer than the reader's.
         assertEquals(0, ok(s(1, 0, Compat.BACKWARD, FP, true), s(1, 0, Compat.BACKWARD, FP, false)));
-        assertEquals(7, ok(s(1, 7, Compat.BACKWARD, FP, true), s(1, 2, Compat.BACKWARD, FP, false)));
+        assertEquals(2, ok(s(1, 7, Compat.BACKWARD, FP, true), s(1, 2, Compat.BACKWARD, FP, false)));
+        assertEquals(2, ok(s(1, 0, Compat.BACKWARD, FP, true), s(1, 2, Compat.BACKWARD, FP, false)));
+        assertEquals(3, ok(s(1, 9, Compat.FULL, FP, true), s(1, 3, Compat.FULL, FP, false)));
         // Different structure from a snapshot writer: rejected even where release versions would be accepted.
         assertEquals(Reason.SNAPSHOT_DRIFT, fails(s(1, 0, Compat.FULL, FP, true), s(1, 0, Compat.FULL, FP + 1, false)));
         assertEquals(Reason.SNAPSHOT_DRIFT, fails(s(1, 0, Compat.BACKWARD, FP, true), s(1, 3, Compat.BACKWARD, FP + 1, true)));

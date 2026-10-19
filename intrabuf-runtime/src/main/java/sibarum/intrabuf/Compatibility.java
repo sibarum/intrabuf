@@ -17,7 +17,8 @@ public final class Compatibility {
      *       older one is below this reader's oldest version ({@code BELOW_OLDEST}). A codec that declares promotions
      *       hands an older major to the codec of that major before calling this.</li>
      *   <li>STRICT: the minor and the fingerprint must match as well.</li>
-     *   <li>If the payload carries the reader's fingerprint, the structures are identical: decode.</li>
+     *   <li>If the payload carries the reader's fingerprint, the structures are identical: decode, at the reader's own
+     *       minor, whatever minor the payload claims.</li>
      *   <li>A snapshot writer with a different fingerprint is rejected whatever the mode, because a development
      *       build's version numbers say nothing about its schema.</li>
      *   <li>BACKWARD: the payload's minor must not exceed the reader's. FULL: any minor.</li>
@@ -52,21 +53,24 @@ public final class Compatibility {
             throw fail(Reason.MINOR_MISMATCH, reader.name() + " is STRICT; payload is v" + h.version()
                     + ", reader is v" + reader.version(), reader, h);
         }
-        boolean sameStructure = h.hasFingerprint() && h.fingerprint() == reader.fingerprint();
-        if (!sameStructure) {
-            if (h.snapshot()) {
-                throw fail(Reason.SNAPSHOT_DRIFT, reader.name() + " payload came from a snapshot build with fingerprint "
-                        + Hex.int32(h.fingerprint()) + "; this reader's is " + Hex.int32(reader.fingerprint()), reader, h);
-            }
-            if (reader.compat() == Compat.STRICT) {
-                throw fail(Reason.FINGERPRINT_MISMATCH, reader.name() + " v" + h.version() + " payload has fingerprint "
-                        + Hex.int32(h.fingerprint()) + " but this reader's is " + Hex.int32(reader.fingerprint())
-                        + "; the schema changed without a version bump", reader, h);
-            }
-            if (reader.compat() == Compat.BACKWARD && h.minor() > reader.minor()) {
-                throw fail(Reason.NEWER_MINOR, reader.name() + " payload is v" + h.version() + ", newer than this reader's v"
-                        + reader.version() + "; BACKWARD readers only accept older or equal minors", reader, h);
-            }
+        if (h.hasFingerprint() && h.fingerprint() == reader.fingerprint()) {
+            // An identical structure is laid out identically whatever its version numbers say (a snapshot build, or
+            // a minor bumped without a structural change), so it is read as the reader's own minor. The payload's
+            // minor may be newer than the reader's, which a BACKWARD body could not otherwise be read at.
+            return reader.minor();
+        }
+        if (h.snapshot()) {
+            throw fail(Reason.SNAPSHOT_DRIFT, reader.name() + " payload came from a snapshot build with fingerprint "
+                    + Hex.int32(h.fingerprint()) + "; this reader's is " + Hex.int32(reader.fingerprint()), reader, h);
+        }
+        if (reader.compat() == Compat.STRICT) {
+            throw fail(Reason.FINGERPRINT_MISMATCH, reader.name() + " v" + h.version() + " payload has fingerprint "
+                    + Hex.int32(h.fingerprint()) + " but this reader's is " + Hex.int32(reader.fingerprint())
+                    + "; the schema changed without a version bump", reader, h);
+        }
+        if (reader.compat() == Compat.BACKWARD && h.minor() > reader.minor()) {
+            throw fail(Reason.NEWER_MINOR, reader.name() + " payload is v" + h.version() + ", newer than this reader's v"
+                    + reader.version() + "; BACKWARD readers only accept older or equal minors", reader, h);
         }
         return h.minor();
     }

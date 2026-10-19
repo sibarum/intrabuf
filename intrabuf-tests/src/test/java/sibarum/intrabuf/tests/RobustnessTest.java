@@ -1,8 +1,10 @@
 package sibarum.intrabuf.tests;
 
 import org.junit.jupiter.api.Test;
+import sibarum.intrabuf.Header;
 import sibarum.intrabuf.IntrabufException;
 import sibarum.intrabuf.MessageCodec;
+import sibarum.intrabuf.SchemaInfo;
 import sibarum.intrabuf.dynamic.DynamicDecoder;
 import sibarum.intrabuf.tests.CompatSchemas.PointV1;
 import sibarum.intrabuf.tests.CompatSchemas.ProfileV1;
@@ -12,6 +14,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.function.Consumer;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -33,7 +36,37 @@ class RobustnessTest {
                 new Case("profile", CompatSchemas_ProfileV1Intrabuf.CODEC,
                         CompatSchemas_ProfileV1Intrabuf.toBytes(new ProfileV1("x", 1, "e", true, List.of("a", "b")))),
                 new Case("shape", CompatSchemas_ShapeWithPointV1Intrabuf.CODEC, CompatSchemas_ShapeWithPointV1Intrabuf.toBytes(
-                        new ShapeWithPointV1("s", List.of(new PointV1(1, 2, 3, true), new PointV1(4, 5, null, false))))));
+                        new ShapeWithPointV1("s", List.of(new PointV1(1, 2, 3, true), new PointV1(4, 5, null, false))))),
+                // A fingerprint in the header: a corrupt minor next to a matching fingerprint is decoded, not rejected.
+                new Case("profile snapshot", CompatSchemas_ProfileV1Intrabuf.CODEC, snapshotProfile()));
+    }
+
+    /** A ProfileV1 payload re-headed as a snapshot build of the same structure wrote it: header with fingerprint. */
+    private static byte[] snapshotProfile() {
+        byte[] release = CompatSchemas_ProfileV1Intrabuf.toBytes(new ProfileV1("x", 1, "e", true, List.of("a", "b")));
+        SchemaInfo s = CompatSchemas_ProfileV1Intrabuf.SCHEMA;
+        byte[] h = Header.encode(new SchemaInfo(s.name(), s.javaType(), s.id(), s.major(), s.minor(), s.compat(),
+                s.fingerprint(), true, "1.0.0-SNAPSHOT"));
+        int body = Header.peek(release).size();
+        byte[] out = java.util.Arrays.copyOf(h, h.length + release.length - body);
+        System.arraycopy(release, body, out, h.length, release.length - body);
+        return out;
+    }
+
+    @Test
+    void everyHeaderMinorFailsCleanlyOrDecodes() {
+        // The minor varint follows magic, flags and the 4-byte id. Every one-byte value of it, beside a fingerprint
+        // that still matches, must decode or throw IntrabufException.
+        DynamicDecoder dynamic = new DynamicDecoder(Manifests.all());
+        byte[] p = snapshotProfile();
+        int minorAt = 7;
+        assertEquals(CompatSchemas_ProfileV1Intrabuf.SCHEMA.minor(), p[minorAt]);
+        for (int v = 0; v < 256; v++) {
+            byte[] q = p.clone();
+            q[minorAt] = (byte) v;
+            survives("minor byte " + v, q, CompatSchemas_ProfileV1Intrabuf.CODEC::decode);
+            survives("dynamic, minor byte " + v, q, dynamic::decode);
+        }
     }
 
     private static void survives(String what, byte[] input, Consumer<byte[]> decode) {
