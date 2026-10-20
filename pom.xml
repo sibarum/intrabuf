@@ -6,7 +6,7 @@
 
     <groupId>sibarum.intrabuf</groupId>
     <artifactId>intrabuf</artifactId>
-    <version>0.1.1-SNAPSHOT</version>
+    <version>0.1.1</version>
     <packaging>pom</packaging>
 
     <name>Intrabuf</name>
@@ -96,7 +96,7 @@
             <plugin>
                 <groupId>dev.vexelray.build</groupId>
                 <artifactId>vexelray-build-maven-plugin</artifactId>
-                <version>0.1.1-SNAPSHOT</version>
+                <version>0.1.1</version>
                 <executions>
                     <execution>
                         <goals>
