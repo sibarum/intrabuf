@@ -3,6 +3,8 @@
 Serialization for data that stays inside your own system. Annotate a Java record; an annotation processor generates
 a codec of straight-line reads and writes. Nothing reflects at runtime, so it works as-is under GraalVM native-image.
 
+Part of the [VexelRay](https://sibarum.github.io/) stack. Building an application on it? Start at the [developer guide](https://sibarum.github.io/vexelray-framework/developers/).
+
 Intrabuf makes one promise: **the same version of the same schema, from the same build, reads what it wrote.**
 Everything beyond that is configured per schema: older readers, newer readers, other versions, an application's own
 header, binary or text, many messages in one payload, the order they arrive in, how much is checked and how much is
