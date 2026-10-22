@@ -1,6 +1,17 @@
 # intrabuf-nanobuf
 
-[Nanobuf](../docs/nanobuf.md) in one line per shell. Paste the line into a script and it can read or write nanobuf
+**[Nanobuf](../docs/nanobuf.md): the serialization format optimized for implementation compactness, with two
+trade-offs you won't even notice.**
+
+You can use it anywhere, even where there are no libraries, because the code fits in one line. That is possible
+because the format keeps a small edge-case surface you'll likely never meet:
+
+1. **A value can't contain `0x1E`, `0x1F` or NUL.** None of them is on a keyboard, and the writers refuse them
+   rather than write a file that would be misread.
+2. **Line-ending conversion (Git, editors) can turn LF into CR LF, or back, inside a value.** The file still parses
+   into the same rows and fields. `-text` in `.gitattributes` stops even that.
+
+This module is nanobuf in one line per shell. Paste the line into a script and it can read or write nanobuf
 with nothing but what the shell has built in. The lines are the resources in
 `src/main/resources/sibarum/intrabuf/nanobuf/`, and `NanobufLine` hands them to a generator that pastes them into the
 scripts it writes. The tests run every line in its real shell and hold it to a reference implementation. They

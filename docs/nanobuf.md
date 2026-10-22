@@ -2,6 +2,32 @@
 
 *Proposed.*
 
+**The serialization format optimized for implementation compactness, with two trade-offs you won't even notice.**
+
+You can use nanobuf anywhere, even where there are no libraries: a reader or a writer fits in one line of the shell
+you already have. Here is the whole reader for POSIX `sh`:
+
+```sh
+nbr(){ awk -v s="$2" -v m="$3" 'BEGIN{BINMODE=3;RS="\36";FS="\37"}{sub(/^\r?\n?/,"")}NR==1{if($1!="nanobuf"||$2!="1"||$3!=s||int($4)!=m)exit 2;h=1;next}$0!=""{'"$4"'}END{if(!h)exit 2}' "$1"||{ echo "nanobuf: $1 is not $2 v$3">&2;return 1;};}
+```
+
+Bash, Zsh and PowerShell get one line each too, in [intrabuf-nanobuf](../intrabuf-nanobuf/README.md). It can be
+that small because there is nothing to parse. Fields are split on one byte and records on another, with no quoting,
+no escaping, and no nesting to resolve. The price is a small edge-case surface, left in on purpose:
+
+1. **Three characters can't appear in a value:** `0x1E` and `0x1F`, the separators, and NUL. None of them is on a
+   keyboard, and shells can't hold NUL in a string anyway. If one does turn up (Microsoft Word uses `0x1E` and `0x1F`
+   for hyphens, and Linux allows them in file names), the writer refuses the value and names the field. It never
+   writes a file a reader would misread.
+2. **Line-ending conversion can change line breaks inside values.** Git on Windows, or an editor, may turn LF into
+   CR LF or back. It never changes how a file parses: the separators come through untouched, and the reader accepts
+   any line break between records. A value that holds a line break may come back with the other kind, which hardly
+   anything downstream cares about. If yours does, `-text` in `.gitattributes` stops it.
+
+Everything else (tabs, line breaks, quotes, non-ASCII text, any locale) goes through byte for byte.
+
+## What it is
+
 Nanobuf is intrabuf for shell scripts. It takes the idea of the [bundle log](bundle-format.md) (a facts line, then
 rows that each name their kind and stand alone) and cuts it down to what a shell can read in a few lines with nothing
 but its built-in commands. Every feature has to pay for itself in reader code on Bash, Zsh, PowerShell 5.1 and awk.
@@ -26,10 +52,9 @@ These separators are single bytes, so splitting on them works the same in every 
 installers often run in. A multi-byte separator would not: Bash splits on one only under a UTF-8 locale, and POSIX awk
 uses only the first character of `RS`.
 
-The three forbidden characters are rare, not impossible. Microsoft Word uses `0x1E` and `0x1F` internally for
-hyphens, and Linux allows both in file names. So **the writer checks every value**, and refuses one that contains a
-forbidden character, naming the field: `installDir contains a control character (0x1F)`. It never writes a file a
-reader would misread.
+**The writer checks every value** and refuses one that holds a forbidden character, naming the field:
+`installDir contains a control character (0x1F)`. A shell writer, which has no field names, gives the field's
+position instead.
 
 ## Records
 
