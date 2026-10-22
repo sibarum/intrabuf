@@ -28,10 +28,15 @@ Everything else (tabs, line breaks, quotes, non-ASCII text, any locale) goes thr
 
 ## What it is
 
-Nanobuf is intrabuf for shell scripts. It takes the idea of the [bundle log](bundle-format.md) (a facts line, then
-rows that each name their kind and stand alone) and cuts it down to what a shell can read in a few lines with nothing
-but its built-in commands. Every feature has to pay for itself in reader code on Bash, Zsh, PowerShell 5.1 and awk.
-Like intrabuf, it is for data that stays inside your own system: both ends are yours.
+Nanobuf is the smallest member of the intrabuf family: the one whose reader and writer are both one-liners. To get
+there it is schemaless. A file names what it holds in its header, but reading or writing one needs no schema. The
+lines split records and fields, check the header's name and major version, and hand over the raw fields. What the
+fields mean is up to the two ends, which agree on it the way any two ends of an intrabuf link do: both are yours.
+
+It takes the idea of the [bundle log](bundle-format.md) (a facts line, then rows that each name their kind and stand
+alone) and cuts it down to what one line of a shell can read with nothing but its built-in commands. Every feature
+has to pay for itself in those lines. A schema can be laid on top, and intrabuf can generate typed readers for it;
+see [Intrabuf schemas](#intrabuf-schemas) below.
 
 Its first user is [Koine](https://github.com/sibarum/koine-shell), whose scripts keep their install records,
 manifests, journals and stamps in it.
@@ -52,10 +57,6 @@ These separators are single bytes, so splitting on them works the same in every 
 installers often run in. A multi-byte separator would not: Bash splits on one only under a UTF-8 locale, and POSIX awk
 uses only the first character of `RS`.
 
-**The writer checks every value** and refuses one that holds a forbidden character, naming the field:
-`installDir contains a control character (0x1F)`. A shell writer, which has no field names, gives the field's
-position instead.
-
 ## Records
 
 The first record is the header:
@@ -65,10 +66,10 @@ nanobuf␟1␟vexelray.Manifest␟1.2␞
 ```
 
 Here and below, `␟` stands for `0x1F` and `␞` for `0x1E` followed by a line feed. The fields are the format version,
-the schema name, and the schema's major and minor version.
+a name for what the file holds, and that content's major and minor version. The name and versions are a label the two
+ends agree on. A schema may stand behind them, but nothing in the format requires one.
 
-Every other record is a row. Its first field is its kind; the rest are that kind's fields, in the order the schema
-declares them. An illustration, not the real manifest schema:
+Every other record is a row: a kind, then that kind's fields. An illustration:
 
 ```
 nanobuf␟1␟vexelray.Manifest␟1.2␞
@@ -79,30 +80,74 @@ file␟1.4.2␟binary␟calculator␟5e3b…␟bin/calculator␞
 file␟1.4.1␟binary␟calculator␟91ac…␟bin/calculator␞
 ```
 
-- **Fields are positional.** The schema gives their names; the file does not repeat them.
-- **Rows are flat.** A field is a string, a whole number, or a boolean (`1` or `0`). There are no lists and no nested
-  records inside a row.
+- **Fields are positional.** The file doesn't name them; the two ends know what each position means.
+- **Rows are flat.** A field is a string. There are no lists and no nested records inside a row.
 - **A list is repeated rows** of one kind, in order.
 - **Nesting is by key.** A child row carries its parent's key as a field, as `file` rows carry their version above.
   There are no references to resolve.
-- **An empty field is missing.** It is allowed only for fields the schema marks optional.
+- **A missing field reads as empty.** A row may have fewer fields than its kind defines.
 - **Rows of different kinds may come in any order.** Rows of one kind keep their order.
 
-## Compatibility
+## Reading and writing
 
-The header's schema name must match, and so must its major version; otherwise the reader refuses the file. Within a
-major version, compatibility costs no reader code:
+A reader, in any language, does this:
+
+1. Split the file on `0x1E`. Whatever follows the last one is not a record: at most a line break, or a truncated
+   record to ignore.
+2. Drop one line break from the start of each record: CR LF if it is there, otherwise a lone LF or CR.
+3. Split each record on `0x1F`.
+4. Check that the first record is `nanobuf`, `1`, the expected name, and a version whose major is the expected one.
+   If it isn't, or there is no first record, refuse the file. Ignore the minor.
+5. Hand over every other record, kind first.
+
+A writer joins a record's fields with `0x1F` and ends it with `0x1E` and a line feed, the header first. It refuses a
+field that contains `0x1E`, `0x1F` or NUL, naming the field (by position when it has no names), and writes nothing of
+that record. It writes UTF-8 with no byte order mark and no other line endings.
+
+[intrabuf-nanobuf](../intrabuf-nanobuf/README.md) is these two in one line per shell, `nbr` and `nbw`, for POSIX `sh`
+(with awk), Bash, Zsh and PowerShell. Each line is tested in its real shell against empty fields, empty trailing
+fields, tabs and line breaks in values (CR LF among them), a final record with and without its line break, CR LF and
+CR after every record, a file put through Git's line-ending conversion, rows with more and fewer fields, and every
+refusal. A line in any other language is welcome there, held to the same cases.
+
+Two traps every implementation has to step around:
+
+- **Interpreters that translate line endings on their own.** gawk on Windows (Git's, Cygwin's, MSYS2's) reads in text
+  mode and turns CR LF inside values into LF, unless `BINMODE=3`. Other awks ignore that variable.
+- **Windows PowerShell 5.1's defaults.** `Get-Content` reads BOM-less UTF-8 as the ANSI code page, and its writers add
+  a BOM and CR LF. Read and write with `[IO.File]` and an explicit no-BOM UTF-8 encoding.
+
+Git treats a nanobuf file as text, since it has no NUL. With `* text=auto` it rewrites line endings: LF to CR LF on
+a Windows checkout, CR LF to LF on commit. This never changes how a file parses. Git leaves `0x1E`, `0x1F` and lone
+CRs alone, and the reader drops CR LF as readily as LF, so the same rows and fields come out. The only thing that can
+change is the line breaks inside a value, which may come back as the other kind. To keep those exact, give nanobuf
+files `-text` in `.gitattributes`. That stops the rewriting both ways, and `git diff` still shows them as text.
+`eol=lf` is not enough: it keeps LF, but turns a value's real CR LF into LF on commit.
+
+## Evolving what a file holds
+
+The header's name must match, and so must its major version; otherwise the reader refuses the file. Within a major
+version, the two ends stay compatible by these rules, which cost no reader code:
 
 - **New fields are added only at the end of a kind.** A reader that expects more fields than a row has reads the
   missing ones as empty. A reader that finds more fields than it expects ignores the rest.
 - **New kinds may be added.** A reader skips kinds it does not know.
 - **A field that is no longer used stays in place,** written empty.
 
-Anything else (removing a field, reordering fields, changing a type) is a new major version.
+Anything else (removing a field, reordering fields, changing what a field means) is a new major version.
 
-## Reading and writing
+## Intrabuf schemas
 
-The code is generated from the declared schema (by Koine's compiler, for Koine scripts), so nobody writes it by hand. These are its shapes.
+*Proposed, not built.* A nanobuf file's content can be declared as an intrabuf schema, whose kinds and fields are
+records. The schema then adds what the bare format leaves to the two ends:
+
+- **Field names.** The file still holds positions; the schema names them.
+- **Types.** A field is a string, a whole number, or a boolean (`1` or `0`).
+- **Optional fields.** An empty field is allowed only where the schema says so. A field added within a major version
+  has to be optional, since older files don't have it.
+
+From a schema, intrabuf (or Koine's compiler, for Koine scripts) can generate readers that name each field and check
+its type. These can be one-liners too, but each belongs to its schema rather than serving every file. Their shapes:
 
 Bash and Zsh. The last variable, `_rest`, catches fields from a newer writer, so they never end up inside the last
 expected field:
@@ -116,9 +161,7 @@ while IFS=$'\x1f' read -r -d $'\x1e' kind version date _rest; do
 done < "$file"
 ```
 
-awk, the same in gawk, mawk, BusyBox and BWK awk. `BINMODE = 3` matters only to gawk on Windows (Git's, Cygwin's
-or MSYS2's), which otherwise reads in text mode and turns CR LF inside values into LF; the other awks see it as an
-ordinary variable:
+awk, the same in gawk, mawk, BusyBox and BWK awk:
 
 ```awk
 BEGIN { BINMODE = 3; RS = "\036"; FS = "\037" }
@@ -126,7 +169,7 @@ BEGIN { BINMODE = 3; RS = "\036"; FS = "\037" }
 $1 == "version" { … }
 ```
 
-PowerShell 5.1. `ReadAllText` with an explicit encoding, because `Get-Content` reads the ANSI code page:
+PowerShell 5.1:
 
 ```powershell
 foreach ($r in [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false)).Split([char]0x1e)) {
@@ -135,30 +178,13 @@ foreach ($r in [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false)).S
 }
 ```
 
-Writing is `printf '%s\037%s\036\n'` in Bash and Zsh. In PowerShell it is `-join [char]0x1f`, written with
-`[IO.File]::WriteAllText` and a no-BOM UTF-8 encoding, so that 5.1 adds neither a BOM nor carriage returns.
+Generated readers are held to the same cases as the lines in intrabuf-nanobuf.
 
-The generated readers must be tested against empty fields, empty trailing fields, values containing tabs and line
-breaks (CR LF among them), a final record with and without its line break, CR LF and CR after every record, and
-rows with more and fewer fields than expected.
-
-For a script with no generator behind it, [intrabuf-nanobuf](../intrabuf-nanobuf/README.md) has a one-line reader
-and a one-line writer for POSIX `sh` (with awk), Bash, Zsh and PowerShell, each tested in its real shell against
-those cases.
-
-Git treats a nanobuf file as text, since it has no NUL. With `* text=auto` it rewrites line endings: LF to CR LF on
-a Windows checkout, CR LF to LF on commit. This never changes how a file parses. Git leaves `0x1E`, `0x1F` and lone
-CRs alone, and the reader drops CR LF as readily as LF, so the same rows and fields come out. The only thing that can
-change is the line breaks inside a value, which may come back as the other kind. To keep those exact, give nanobuf
-files `-text` in `.gitattributes`. That stops the rewriting both ways, and `git diff` still shows them as text.
-`eol=lf` is not enough: it keeps LF, but turns a value's real CR LF into LF on commit.
+On the Java side, the processor could give such a schema a nanobuf codec, so components such as the installer
+generator read and write the same files as the scripts. Nothing in Java reads or writes nanobuf yet.
 
 ## Relation to the rest of intrabuf
 
 Nanobuf is not the [text format](text-format.md). That format is CSV with quoting, inline lists and references
 between tables, which a shell cannot read without a real parser. Nanobuf keeps the facts line and the bundle log of
 self-contained rows, and drops the rest.
-
-Nothing in the Java side reads or writes nanobuf yet. A schema whose rows are all flat could be given a nanobuf codec
-by the processor, so Java components such as the installer generator could read and write the same files as shell
-scripts. That is proposed, not built.

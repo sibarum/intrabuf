@@ -44,11 +44,7 @@ final class Reference {
     /** The rows after the header, each as its fields; refuses another schema or major, or a file with no header. */
     static List<List<String>> read(byte[] file, String schema, int major) {
         String text = new String(file, StandardCharsets.UTF_8);
-        int end = text.lastIndexOf(RS);
-        String tail = dropLineBreak(text.substring(end + 1));
-        if (!tail.isEmpty()) {
-            throw new IllegalArgumentException("truncated: the last record has no record separator");
-        }
+        int end = text.lastIndexOf(RS);  // what follows is a line break or a truncated record, neither a record
         if (end < 0) {
             throw new IllegalArgumentException("no header");
         }
