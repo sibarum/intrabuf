@@ -349,6 +349,9 @@ Application headers work too: their own components become a `#header` table.
 
 The format is specified in [docs/text-format.md](docs/text-format.md).
 
+For shell scripts there is a cut-down sibling, nanobuf: flat rows split on single control bytes, which Bash, Zsh,
+PowerShell and awk read with their built-in commands. It is proposed in [docs/nanobuf.md](docs/nanobuf.md).
+
 ## Bundles: many messages in one log
 
 A bundle holds many top-level messages of the kinds its schema lists. It's declared as a record of lists, and evolves
