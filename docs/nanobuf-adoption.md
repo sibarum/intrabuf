@@ -175,10 +175,12 @@ The pipeline itself (preflight, build, deploy) has no installed base, so it can 
 
 - **Line endings.** With this stack's `* text=auto`, Git checks a nanobuf file out on Windows with CR LF. Readers that
   dropped only LF then saw every kind as `\r\nversion` and silently skipped every row (reproduced with `read.bash`).
-  The spec now has readers drop any one line break after a record (CR LF first, then LF or CR), so the rows survive.
-  Line breaks inside values still come back as CR LF, so files whose values hold them want `*.nb eol=lf`, as
-  `vexelray-dist` already does for its manifests (`.gitattributes:7`). Also, gawk on Windows reads in text mode and
-  turns CR LF into LF unless `BINMODE=3`; `read.sh` sets it.
+  The spec now has readers drop any one line break after a record (CR LF first, then LF or CR), so a converted file
+  parses the same. Without an attribute, the worst case is a value's line breaks coming back as the other kind. Every
+  repo holding `.nb` files should set `*.nb -text` so values stay byte for byte. That includes `vexelray-dist`, whose
+  manifests are forced to LF today (`.gitattributes:7`). `eol=lf` keeps LF but turns a value's real CR LF into LF on
+  commit (tested). Also, gawk on Windows reads in text mode and turns CR LF into LF unless `BINMODE=3`; `read.sh` sets
+  it.
 - **Git for Windows' bash drops carriage returns from a script's own text,** even inside quotes. This is one more
   reason not to embed data in generated scripts: pass it as a file, or as native literals with no CR.
 - **Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI.** This is a live bug today, independent of nanobuf. The

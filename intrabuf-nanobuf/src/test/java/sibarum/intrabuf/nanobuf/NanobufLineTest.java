@@ -134,7 +134,7 @@ class NanobufLineTest {
     }
 
     /** What a Windows checkout with {@code text=auto} does: every bare LF becomes CR LF, inside values too. The rows
-     *  survive; line breaks inside values come back as CR LF, which only {@code eol=lf} prevents. */
+     *  survive; line breaks inside values come back as CR LF, which only {@code -text} prevents. */
     @ParameterizedTest
     @EnumSource(Shell.class)
     void survivesGitsLineEndingConversion(Shell shell) throws Exception {

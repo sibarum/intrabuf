@@ -121,11 +121,12 @@ For a script with no generator behind it, [intrabuf-nanobuf](../intrabuf-nanobuf
 and a one-line writer for POSIX `sh` (with awk), Bash, Zsh and PowerShell, each tested in its real shell against
 those cases.
 
-Git treats a nanobuf file as text, since it has no NUL, so with `* text=auto` a Windows checkout turns every line
-feed into CR LF. Between records that is harmless: the reader drops CR LF as readily as LF. Inside a value it is not.
-A value holding a line break comes back with CR LF in place of LF, and the reader can't tell that from a value that
-was written that way. A repository whose nanobuf values may hold line breaks should give them `eol=lf` (or `-text`)
-in `.gitattributes`.
+Git treats a nanobuf file as text, since it has no NUL. With `* text=auto` it rewrites line endings: LF to CR LF on
+a Windows checkout, CR LF to LF on commit. This never changes how a file parses. Git leaves `0x1E`, `0x1F` and lone
+CRs alone, and the reader drops CR LF as readily as LF, so the same rows and fields come out. The only thing that can
+change is the line breaks inside a value, which may come back as the other kind. To keep those exact, give nanobuf
+files `-text` in `.gitattributes`. That stops the rewriting both ways, and `git diff` still shows them as text.
+`eol=lf` is not enough: it keeps LF, but turns a value's real CR LF into LF on commit.
 
 ## Relation to the rest of intrabuf
 
