@@ -75,6 +75,7 @@ this stack), not from where a row falls in the stream. The design is in [docs/bu
 | `intrabuf-runtime`   | Wire format, header and compatibility rules, `MessageCodec`, annotations, schema model. No dependencies. |
 | `intrabuf-processor` | The annotation processor. Only ever goes on the processor path.                                 |
 | `intrabuf-cli`       | `intrabuf`, the payload inspector. Builds to a native executable.                               |
+| `intrabuf-nanobuf`   | Nanobuf in one line per shell: readers and writers for sh, Bash, Zsh and PowerShell. No dependencies. |
 | `intrabuf-example`   | A small domain configured the way an application would configure it.                            |
 | `intrabuf-tests`     | End-to-end tests: round trips, compatibility, fuzzing, generated-vs-dynamic agreement, CLI.      |
 

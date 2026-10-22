@@ -1,0 +1,1 @@
+nbr(){ awk -v s="$2" -v m="$3" 'BEGIN{BINMODE=3;RS="\36";FS="\37"}{sub(/^\r?\n?/,"")}NR==1{if($1!="nanobuf"||$2!="1"||$3!=s||int($4)!=m)exit 2;h=1;next}$0!=""{'"$4"'}END{if(!h)exit 2}' "$1"||{ echo "nanobuf: $1 is not $2 v$3">&2;return 1;};}

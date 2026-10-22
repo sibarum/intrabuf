@@ -1,0 +1,1 @@
+nbr(){ local f h=;while IFS=$'\37' read -ru3 -d$'\36' -a f;do f=${f#$'\r'};f=${f#$'\n'};if [ "$h" ];then "$4" "${f[@]}";elif [[ $f = nanobuf && ${f[1]} = 1 && ${f[2]} = "$2" && ${f[3]%%.*} = "$3" ]];then h=1;else break;fi;done 3<"$1";[ "$h" ]||{ echo "nanobuf: $1 is not $2 v$3">&2;return 1;};}

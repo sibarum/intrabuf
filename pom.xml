@@ -26,6 +26,9 @@
         <module>intrabuf-processor</module>
         <!-- Manifest + payload in, human-readable text out. The native-image target. -->
         <module>intrabuf-cli</module>
+        <!-- Nanobuf as one line per shell: readers and writers for sh, Bash, Zsh and PowerShell, held to the spec by
+             running each in its real shell. Depends on nothing. -->
+        <module>intrabuf-nanobuf</module>
         <!-- A small domain built the way a user would build one, plus a main that writes sample payloads. -->
         <module>intrabuf-example</module>
         <!-- Round-trip, compatibility, robustness and generated-vs-dynamic agreement tests. Depends on the example
@@ -54,6 +57,11 @@
             <dependency>
                 <groupId>sibarum.intrabuf</groupId>
                 <artifactId>intrabuf-cli</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>sibarum.intrabuf</groupId>
+                <artifactId>intrabuf-nanobuf</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

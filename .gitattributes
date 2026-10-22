@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The one-line readers and writers break on a carriage return.
+intrabuf-nanobuf/src/main/resources/** text eol=lf

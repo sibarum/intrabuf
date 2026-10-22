@@ -1,0 +1,1 @@
+function nbw($p){for($i=0;$i-lt$args.Count;$i++){if("$($args[$i])"-match'[\x00\x1e\x1f]'){throw "nanobuf: field $i of $($args[0]) contains 0x00, 0x1E or 0x1F"}};[IO.File]::AppendAllText($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p),($args-join[char]31)+[char]30+"`n",[Text.UTF8Encoding]::new(0))}

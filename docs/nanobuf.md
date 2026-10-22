@@ -15,8 +15,10 @@ manifests, journals and stamps in it.
 - **UTF-8, with no byte order mark.**
 - **`0x1F` (unit separator) separates fields.**
 - **`0x1E` (record separator) ends every record,** including the last. The writer puts a line feed after each one, so
-  a file still shows one record per line in an editor or `git diff`. The reader drops one line feed from the start of
-  each record.
+  a file still shows one record per line in an editor or `git diff`. The reader drops one line break from the start of
+  each record, whichever kind it is: CR LF, matched first, or a lone LF or a lone CR. A file whose line endings an
+  editor or Git has converted still reads the same rows. Only the record separator ends a record, so this costs
+  nothing: the first field is a kind, which never starts with a line break.
 - **Nothing is quoted or escaped.** A value may contain anything except `0x1E`, `0x1F` and NUL, including tabs and
   line breaks.
 
@@ -82,26 +84,28 @@ expected field:
 
 ```bash
 while IFS=$'\x1f' read -r -d $'\x1e' kind version date _rest; do
-    kind=${kind#$'\n'}
+    kind=${kind#$'\r'}; kind=${kind#$'\n'}     # CR LF, LF or CR
     case $kind in
         version) … ;;
     esac
 done < "$file"
 ```
 
-awk, the same in gawk, mawk, BusyBox and BWK awk:
+awk, the same in gawk, mawk, BusyBox and BWK awk. `BINMODE = 3` matters only to gawk on Windows (Git's, Cygwin's
+or MSYS2's), which otherwise reads in text mode and turns CR LF inside values into LF; the other awks see it as an
+ordinary variable:
 
 ```awk
-BEGIN { RS = "\036"; FS = "\037" }
-{ kind = $1; sub(/^\n/, "", kind) }
-kind == "version" { … }
+BEGIN { BINMODE = 3; RS = "\036"; FS = "\037" }
+{ sub(/^\r?\n?/, "") }                       # CR LF, LF or CR; also re-splits the fields
+$1 == "version" { … }
 ```
 
 PowerShell 5.1. `ReadAllText` with an explicit encoding, because `Get-Content` reads the ANSI code page:
 
 ```powershell
 foreach ($r in [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false)).Split([char]0x1e)) {
-    $f = $r.TrimStart("`n").Split([char]0x1f)
+    $f = ($r -replace '^\r?\n?').Split([char]0x1f)
     switch ($f[0]) { 'version' { … } }
 }
 ```
@@ -110,7 +114,18 @@ Writing is `printf '%s\037%s\036\n'` in Bash and Zsh. In PowerShell it is `-join
 `[IO.File]::WriteAllText` and a no-BOM UTF-8 encoding, so that 5.1 adds neither a BOM nor carriage returns.
 
 The generated readers must be tested against empty fields, empty trailing fields, values containing tabs and line
-breaks, a final record with and without its line feed, and rows with more and fewer fields than expected.
+breaks (CR LF among them), a final record with and without its line break, CR LF and CR after every record, and
+rows with more and fewer fields than expected.
+
+For a script with no generator behind it, [intrabuf-nanobuf](../intrabuf-nanobuf/README.md) has a one-line reader
+and a one-line writer for POSIX `sh` (with awk), Bash, Zsh and PowerShell, each tested in its real shell against
+those cases.
+
+Git treats a nanobuf file as text, since it has no NUL, so with `* text=auto` a Windows checkout turns every line
+feed into CR LF. Between records that is harmless: the reader drops CR LF as readily as LF. Inside a value it is not.
+A value holding a line break comes back with CR LF in place of LF, and the reader can't tell that from a value that
+was written that way. A repository whose nanobuf values may hold line breaks should give them `eol=lf` (or `-text`)
+in `.gitattributes`.
 
 ## Relation to the rest of intrabuf
 
