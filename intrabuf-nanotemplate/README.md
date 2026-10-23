@@ -1,7 +1,7 @@
 # intrabuf-nanotemplate
 
 **[Nanotemplate](../docs/nanotemplate.md): the template format optimized for implementation compactness. Every
-template names its own escape character and delimiters, and a key can be anything.**
+template names its own escape character and delimiters, so it fits nearly any content, and a key can be anything.**
 
 ```
 nanotemplate 1 \ {{ }}
@@ -17,8 +17,9 @@ nothing but what the shell has built in. The lines are the resources in
 `src/main/resources/sibarum/intrabuf/nanotemplate/`, and `NanotemplateLine` hands them to a generator that pastes them
 into the scripts it writes. The tests run every line in its real shell, under the C locale and under UTF-8, and hold
 it to a reference implementation. They cover many delimiter sets: `{{ }}`, `<% %>`, `${ }`, one character each, the
-same on both sides, glob, regex and shell-quote characters, non-ASCII ones and emoji. They also cover keys and values
-holding every one of those, line breaks (CR LF among them), tabs, each shell's special characters, empty keys and
+same on both sides, glob, regex and shell-quote characters, non-ASCII ones and emoji, and escapes from `\` to
+control characters such as `0x1B`, `0x01`, tab and DEL. They also cover keys and values holding every one of those,
+line breaks (CR LF among them), tabs, each shell's special characters, empty keys and
 values, trailing line breaks, a body with and without a final line break, an empty body, a CR LF header, repeated,
 unused and dangling pairs, and every refusal.
 
@@ -26,9 +27,9 @@ The game is the shortest line that is still correct. A shorter line that passes 
 
 | line        | bytes | shell                                    | tested here                                |
 |-------------|-------|------------------------------------------|--------------------------------------------|
-| `fill.sh`   | 742   | POSIX `sh` (dash, BusyBox ash), Zsh      | dash, Git's sh; zsh **not yet**: no zsh on the dev host |
-| `fill.bash` | 586   | Bash 3.2 and later                       | Bash 5.3                                   |
-| `fill.ps1`  | 649   | Windows PowerShell 5.1, PowerShell 7     | 5.1                                        |
+| `fill.sh`   | 739   | POSIX `sh` (dash, BusyBox ash), Zsh      | dash, Git's sh; zsh **not yet**: no zsh on the dev host |
+| `fill.bash` | 585   | Bash 3.2 and later                       | Bash 5.3                                   |
+| `fill.ps1`  | 665   | Windows PowerShell 5.1, PowerShell 7     | 5.1                                        |
 
 The tests skip a shell that isn't installed; point them at one with `-Dnanotemplate.bash=`, `-Dnanotemplate.sh=`,
 `-Dnanotemplate.dash=`, `-Dnanotemplate.zsh=` or `-Dnanotemplate.powershell=`. From PowerShell, Git's bash isn't on

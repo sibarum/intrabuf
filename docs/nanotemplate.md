@@ -9,7 +9,7 @@ Like [nanobuf](nanobuf.md), nanotemplate works even where there are no libraries
 line of the shell you already have. Here is the whole filler for Bash:
 
 ```bash
-ntf()(LC_ALL=C;f=$1;b(){ echo "nanotemplate: $f ${1:-is not nanotemplate 1}">&2;exit 1;};s(){ a=;while q=${t%%"$e"*};q=${q%%"$1"*};a+=$q;t=${t#"$q"};[[ $t = "$e"?* ]];do a+=${t:1:1};t=${t:2};done;};IFS= read -r h <"$f"||b;IFS= read -rd '' t <"$f";t=${t#"$h"?};h=${h%$'\r'};[[ $h =~ ^nanotemplate\ 1\ [[:graph:]]\ [^\ ]+\ [^\ ]+$ ]]||b;IFS=\  read -r n n e o c <<<$h;[[ $o$c = *"$e"* ]]&&b;r=;while s "$o";r+=$a;[ "$t" ];do t=${t#"$o"};s "$c";[[ $t = "$c"* ]]||b;t=${t#"$c"};i=0;while((i+=2,i<$#))||b "has no value for $a";[[ ${!i} != "$a" ]];do :;done;r+=${@:i+1:1};done;printf %s "$r")
+ntf()(LC_ALL=C;f=$1;b(){ echo "nanotemplate: $f ${1:-is not nanotemplate 1}">&2;exit 1;};s(){ a=;while q=${t%%"$e"*};q=${q%%"$1"*};a+=$q;t=${t#"$q"};[[ $t = "$e"?* ]];do a+=${t:1:1};t=${t:2};done;};IFS= read -r h <"$f"||b;IFS= read -rd '' t <"$f";t=${t#"$h"?};h=${h%$'\r'};[[ $h =~ ^nanotemplate\ 1\ [^\ ]\ [^\ ]+\ [^\ ]+$ ]]||b;IFS=\  read -r n n e o c <<<$h;[[ $'\r'$o$c = *"$e"* ]]&&b;r=;while s "$o";r+=$a;[ "$t" ];do t=${t#"$o"};s "$c";[[ $t = "$c"* ]]||b;t=${t#"$c"};i=0;while((i+=2,i<$#))||b "has no value for $a";[[ ${!i} != "$a" ]];do :;done;r+=${@:i+1:1};done;printf %s "$r")
 ```
 
 POSIX `sh` and PowerShell get one line each too, in [intrabuf-nanotemplate](../intrabuf-nanotemplate/README.md). The
@@ -29,11 +29,14 @@ The header has five fields, separated by single spaces:
 
 1. `nanotemplate`, the format.
 2. `1`, its version.
-3. **The escape:** one printable ASCII character (`!` to `~`).
+3. **The escape:** one ASCII character other than NUL, line feed, carriage return and space. Control characters,
+   tab and DEL are all allowed.
 4. **The opening delimiter:** one or more characters.
 5. **The closing delimiter:** one or more characters.
 
-No field contains a space or a line feed, and neither delimiter contains the escape. The delimiters may be anything
+No field contains a space or a line feed, and neither delimiter contains the escape. The escape can't be a carriage
+return because line-ending conversion adds and removes those: an escape before a line feed would change what the
+template writes the moment Git or an editor touched it. The delimiters may be anything
 else: one character or several, ASCII or not, the same as each other or different. A carriage return just before
 the line feed is dropped, so a header with CR LF reads the same.
 
@@ -93,6 +96,28 @@ nanotemplate 1 \ % %
 echo "100\% installed to %dir%"
 ```
 
+## Choosing the escape
+
+The escape writes whatever follows it, so every literal escape character in the body has to be escaped too. With `\`
+as the escape, a shell script's every backslash is doubled, and `echo "a\nb"` fills to `echo "anb"`. Pick an escape
+the body doesn't contain, and the body needs escaping only where it contains the opening delimiter, which a
+well-chosen delimiter makes rare.
+
+For a template a person writes by hand, that is a printable character the body happens not to use, such as `` ` ``
+in a shell script that uses `$(…)` throughout. For a template a program writes, it is a control character no body
+contains, the way nanobuf separates fields with `0x1F`. `0x1B`, which ASCII calls Escape, is the natural choice:
+
+```
+nanotemplate 1 ␛ {{ }}
+printf '%s\n' "$1" | sed 's/\\/\\\\/g' > {{out}}
+```
+
+Here and below, `␛` stands for the byte `0x1B`. The body above needs no escaping at all. Git still treats the file as
+text, since it has no NUL, and `git diff` shows the escape as `^[` or `<1B>`.
+
+Because every template names its own escape and delimiters, no content is out of reach: whatever a body holds, some
+choice of the three makes it need little or no escaping.
+
 ## Reading notes for implementers
 
 - **Work in bytes or in characters, not in a mix.** Every delimiter and the escape is valid UTF-8, so matching bytes
@@ -101,8 +126,10 @@ echo "100\% installed to %dir%"
   them, stores characters in 16 bits and splits a character outside the Basic Multilingual Plane (an emoji, say)
   when it takes one character in a UTF-8 locale; working in bytes avoids that.
 - **Check the escape is ASCII without trusting the locale.** dash reads its locale once at startup and ignores
-  `LC_ALL` set later, so `[[:graph:]]` there may accept `é`. The `sh` line also checks the character's code with
+  `LC_ALL` set later, so in a UTF-8 locale its `?` matches all of `é`. The `sh` line checks the character's code with
   `printf %d "'$e"`, which is under 128 only for ASCII in any locale.
+- **Control characters are ordinary characters,** even the ones a shell uses inside. Bash marks quoted text with
+  `0x01` and `0x7F` internally, and the tests hold every line to those, as escapes and inside keys, values and bodies.
 - **Don't let the shell strip trailing line breaks.** `$(cat file)` drops them; read with a marker after
   (`$(cat file; echo .)`, then remove the `.`) or with `read -d ''`.
 - **Windows PowerShell 5.1 strips a byte order mark** when it reads text with `ReadAllText` or `Get-Content`, which

@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
  */
 final class Reference {
 
-    private static final Pattern HEADER = Pattern.compile("nanotemplate 1 ([!-~]) ([^ ]+) ([^ ]+)");
+    private static final Pattern HEADER = Pattern.compile("nanotemplate 1 ([\\x01-\\x7f&&[^ \r\n]]) ([^ ]+) ([^ ]+)");
 
     private Reference() {
     }
