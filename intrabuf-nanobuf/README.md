@@ -17,19 +17,19 @@ with nothing but what the shell has built in. The lines are the resources in
 scripts it writes. The tests run every line in its real shell and hold it to a reference implementation. They
 cover empty fields, empty trailing fields, tabs, line breaks (CR LF among them), a leading line break, a carriage
 return, non-ASCII characters, each shell's special characters, a final record with and without its line break,
-records ended by CR LF or a lone CR, a file put through Git's line-ending conversion, rows with more and fewer fields,
-and every refusal.
+a truncated final record, records ended by CR LF or a lone CR, a file put through Git's line-ending conversion, rows
+with more and fewer fields, and every refusal.
 
 The game is the shortest line that is still correct. A shorter line that passes the tests is a better one.
 
 | line         | bytes | shell                                   | tested here                         |
 |--------------|-------|-----------------------------------------|-------------------------------------|
-| `read.sh`    | 241   | POSIX `sh` (dash, BusyBox ash), via awk | dash, Git's sh, bash; GNU awk       |
+| `read.sh`    | 271   | POSIX `sh` (dash, BusyBox ash), via awk | dash, Git's sh, bash; GNU awk       |
 | `write.sh`   | 193   | POSIX `sh`                              | dash, Git's sh, bash                |
 | `read.bash`  | 294   | Bash 3.2 and later                      | Bash 5.3                            |
 | `write.bash` | 176   | Bash 3.2 and later, Zsh                 | Bash 5.3                            |
 | `read.zsh`   | 305   | Zsh                                     | **not yet**: no zsh on the dev host |
-| `read.ps1`   | 346   | Windows PowerShell 5.1, PowerShell 7    | 5.1                                 |
+| `read.ps1`   | 367   | Windows PowerShell 5.1, PowerShell 7    | 5.1                                 |
 | `write.ps1`  | 326   | Windows PowerShell 5.1, PowerShell 7    | 5.1                                 |
 
 Zsh writes with `write.bash`. The tests skip a shell that isn't installed; point them at one with `-Dnanobuf.bash=`,

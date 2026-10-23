@@ -8,7 +8,7 @@ You can use nanobuf anywhere, even where there are no libraries: a reader or a w
 you already have. Here is the whole reader for POSIX `sh`:
 
 ```sh
-nbr(){ awk -v s="$2" -v m="$3" 'BEGIN{BINMODE=3;RS="\36";FS="\37"}{sub(/^\r?\n?/,"")}NR==1{if($1!="nanobuf"||$2!="1"||$3!=s||int($4)!=m)exit 2;h=1;next}$0!=""{'"$4"'}END{if(!h)exit 2}' "$1"||{ echo "nanobuf: $1 is not $2 v$3">&2;return 1;};}
+nbr(){ echo|cat "$1" -|awk -vBINMODE=3 -v s="$2" -v m="$3" 'BEGIN{RS="\36";FS="\37"}{sub(/^\r?\n?/,"");t=$0;$0=p;p=t}NR==2{if($1!="nanobuf"||$2!="1"||$3!=s||int($4)!=m)exit 2;h=1;next}h&&$0!=""{'"$4"'}END{if(!h)exit 2}'||{ echo "nanobuf: $1 is not $2 v$3">&2;return 1;};}
 ```
 
 Bash, Zsh and PowerShell get one line each too, in [intrabuf-nanobuf](../intrabuf-nanobuf/README.md). It can be
@@ -106,14 +106,15 @@ that record. It writes UTF-8 with no byte order mark and no other line endings.
 
 [intrabuf-nanobuf](../intrabuf-nanobuf/README.md) is these two in one line per shell, `nbr` and `nbw`, for POSIX `sh`
 (with awk), Bash, Zsh and PowerShell. Each line is tested in its real shell against empty fields, empty trailing
-fields, tabs and line breaks in values (CR LF among them), a final record with and without its line break, CR LF and
-CR after every record, a file put through Git's line-ending conversion, rows with more and fewer fields, and every
-refusal. A line in any other language is welcome there, held to the same cases.
+fields, tabs and line breaks in values (CR LF among them), a final record with and without its line break, a
+truncated final record, CR LF and CR after every record, a file put through Git's line-ending conversion, rows with
+more and fewer fields, and every refusal. A line in any other language is welcome there, held to the same cases.
 
 Two traps every implementation has to step around:
 
 - **Interpreters that translate line endings on their own.** gawk on Windows (Git's, Cygwin's, MSYS2's) reads in text
-  mode and turns CR LF inside values into LF, unless `BINMODE=3`. Other awks ignore that variable.
+  mode and turns CR LF inside values into LF, unless `BINMODE=3` (set with `-v` when it reads standard input). Other
+  awks ignore that variable.
 - **Windows PowerShell 5.1's defaults.** `Get-Content` reads BOM-less UTF-8 as the ANSI code page, and its writers add
   a BOM and CR LF. Read and write with `[IO.File]` and an explicit no-BOM UTF-8 encoding.
 

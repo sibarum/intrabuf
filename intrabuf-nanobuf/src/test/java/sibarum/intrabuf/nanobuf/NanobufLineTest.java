@@ -133,6 +133,15 @@ class NanobufLineTest {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(Shell.class)
+    void ignoresATruncatedFinalRecord(Shell shell) throws Exception {
+        String whole = new String(Reference.write(SCHEMA, 1, 2, ROWS), StandardCharsets.UTF_8);
+        byte[] file = (whole + "trunc\u001fated").getBytes(StandardCharsets.UTF_8);
+        assertEquals(ROWS, Reference.read(file, SCHEMA, 1));
+        assertEquals(dump(ROWS), read(shell, file, SCHEMA, 1));
+    }
+
     /** What a Windows checkout with {@code text=auto} does: every bare LF becomes CR LF, inside values too. The rows
      *  survive; line breaks inside values come back as CR LF, which only {@code -text} prevents. */
     @ParameterizedTest
