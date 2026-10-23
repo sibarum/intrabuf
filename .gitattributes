@@ -3,3 +3,6 @@
 
 # The one-line readers and writers break on a carriage return.
 intrabuf-nanobuf/src/main/resources/** text eol=lf
+
+# So do the template fillers.
+intrabuf-nanotemplate/src/main/resources/** text eol=lf

@@ -76,6 +76,7 @@ this stack), not from where a row falls in the stream. The design is in [docs/bu
 | `intrabuf-processor` | The annotation processor. Only ever goes on the processor path.                                 |
 | `intrabuf-cli`       | `intrabuf`, the payload inspector. Builds to a native executable.                               |
 | `intrabuf-nanobuf`   | Nanobuf in one line per shell: readers and writers for sh, Bash, Zsh and PowerShell. No dependencies. |
+| `intrabuf-nanotemplate` | Nanotemplate in one line per shell: a template filler for sh, Bash, Zsh and PowerShell. No dependencies. |
 | `intrabuf-example`   | A small domain configured the way an application would configure it.                            |
 | `intrabuf-tests`     | End-to-end tests: round trips, compatibility, fuzzing, generated-vs-dynamic agreement, CLI.      |
 
@@ -351,7 +352,9 @@ Application headers work too: their own components become a `#header` table.
 The format is specified in [docs/text-format.md](docs/text-format.md).
 
 For shell scripts there is a cut-down sibling, nanobuf: flat rows split on single control bytes, which Bash, Zsh,
-PowerShell and awk read with their built-in commands. It is proposed in [docs/nanobuf.md](docs/nanobuf.md).
+PowerShell and awk read with their built-in commands. It is proposed in [docs/nanobuf.md](docs/nanobuf.md). Its
+sibling for the files scripts write out, nanotemplate, is a template format that names its own escape character and
+delimiters and is filled in by one line of shell. It is proposed in [docs/nanotemplate.md](docs/nanotemplate.md).
 
 ## Bundles: many messages in one log
 

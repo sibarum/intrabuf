@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.intrabuf</groupId>
+        <artifactId>intrabuf</artifactId>
+        <version>0.1.2-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>intrabuf-nanotemplate</artifactId>
+
+    <name>intrabuf-nanotemplate</name>
+    <description>
+        Nanotemplate in as few characters as each shell allows: a one-line template filler for POSIX sh, Bash, Zsh
+        and PowerShell 5.1, shipped as resources for generators to paste into the scripts they write. The tests run
+        every line in the real shell against a reference implementation. Depends on nothing.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+</project>
